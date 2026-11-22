@@ -1,5 +1,5 @@
 // 둥지 테니스 기록 — 오프라인용 서비스 워커
-const CACHE = 'dungji-tennis-v1';
+const CACHE = 'dungji-tennis-v2';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

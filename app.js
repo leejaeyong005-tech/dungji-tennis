@@ -31,7 +31,12 @@ let newPlayer = '';
 let showTrash = false;
 let busy = false;
 
-const canEdit = () => conn === 'ok' && !busy;
+let isAdmin = false, adminEmail = '', signedIn = false;
+const canAdd = () => conn === 'ok' && !busy;                 // 회원 누구나: 경기·선수 추가
+const canAdmin = () => canAdd() && isAdmin;                  // 관리자만: 전체 수정
+const RECENT_MS = 23.5 * 3600 * 1000;                        // 서버 규칙은 24시간, 화면은 여유를 둠
+const isRecent = m => m.created_at && (Date.now() - new Date(m.created_at).getTime()) < RECENT_MS;
+const canTrash = m => canAdmin() || (canAdd() && isRecent(m));
 const live = () => state.matches.filter(m => !m.deleted_at);
 const trash = () => state.matches.filter(m => m.deleted_at).sort((x, y) => (y.deleted_at > x.deleted_at ? 1 : -1));
 const visiblePlayers = () => state.players.filter(p => !p.deleted_at);
@@ -48,7 +53,7 @@ function fromDb(s, players, matches){
   state.drawAt = s ? s.draw_at : 5;
   state.drawMode = s && s.draw_mode === 'exclude' ? 'exclude' : 'half';
   state.players = players.map(p => ({ id: p.id, name: p.name, active: p.active !== false, deleted_at: p.deleted_at || null }));
-  state.matches = matches.map(m => ({ id: m.id, t: Number(m.t) || 0, date: m.date, type: m.type, a: m.a || [], b: m.b || [], sa: m.sa, sb: m.sb, note: m.note || '', deleted_at: m.deleted_at || null }));
+  state.matches = matches.map(m => ({ id: m.id, t: Number(m.t) || 0, date: m.date, type: m.type, a: m.a || [], b: m.b || [], sa: m.sa, sb: m.sb, note: m.note || '', deleted_at: m.deleted_at || null, created_at: m.created_at || null }));
   reindex();
 }
 async function fetchAll(table){
@@ -175,7 +180,7 @@ function header(){
   const st = conn === 'loading' ? '<span class="sync">불러오는 중…</span>'
     : conn === 'offline' ? '<button class="sync off" data-act="refresh">연결 안 됨 · 보기만 가능 ↻</button>'
     : `<button class="sync" data-act="refresh" title="새로고침">↻ ${lastSync ? pad(lastSync.getHours()) + ':' + pad(lastSync.getMinutes()) : ''}</button>`;
-  return `<header><div class="wrap"><div class="toprow"><div class="club">${esc(state.club)}</div>${st}</div><h1>경기 결과 · 통계</h1>
+  return `<header><div class="wrap"><div class="toprow"><div class="club">${esc(state.club)}${isAdmin ? ' <span class="badge">관리자</span>' : ''}</div>${st}</div><h1>경기 결과 · 통계</h1>
     <nav>${tabs.map(([k, l]) => `<button data-act="tab" data-v="${k}" class="${cur === k ? 'on' : ''}">${l}</button>`).join('')}</nav></div></header>`;
 }
 function body(){
@@ -246,7 +251,7 @@ function rankingView(){
 
 function matchRow(m, restore){
   const aWin = m.sa > m.sb, bWin = m.sb > m.sa;
-  const btn = !canEdit() ? '<span></span>' : restore
+  const btn = !canTrash(m) ? '<span></span>' : restore
     ? `<button class="ghost tiny" data-act="restorematch" data-id="${esc(m.id)}">되살리기</button>`
     : `<button class="x" data-act="delmatch" data-id="${esc(m.id)}" title="휴지통으로">✕</button>`;
   return `<div class="match"><span class="badge ${m.type}">${m.type === 'D' ? '복식' : '단식'}</span>
@@ -363,7 +368,7 @@ function resolveNames(nameList){
   for (const n of nameList) {
     if (map[n]) continue;
     const p = state.players.find(x => x.name === n);
-    if (p) { map[n] = p.id; if (p.deleted_at || p.active === false) revive.push(p); }
+    if (p) { map[n] = p.id; if (isAdmin && (p.deleted_at || p.active === false)) revive.push(p); }
     else { const np = { id: uid(), name: n, active: true, deleted_at: null }; add.push(np); map[n] = np.id; }
   }
   return { add, revive, map };
@@ -376,7 +381,7 @@ async function savePlayers(add, revive){
 function playersView(){
   const { P } = computeStats(live().filter(m => m.type === 'D'));
   const list = visiblePlayers().sort((a, b) => ((a.active === false) - (b.active === false)) || a.name.localeCompare(b.name, 'ko'));
-  const ed = canEdit();
+  const ed = canAdmin();
   return `${conn === 'ok' ? `<div class="card"><h2>선수 등록</h2>
     <form id="playerform" class="row" autocomplete="off"><input type="text" data-np value="${esc(newPlayer)}" placeholder="이름 (여러 명은 쉼표로 구분)" style="flex:1;min-width:180px"><button class="primary" type="submit" ${busy ? 'disabled' : ''}>추가</button></form></div>` : ''}
   <div class="card"><h2>선수 목록<small>${list.length}명 · 전체 기간 복식 기준</small></h2>
@@ -387,7 +392,7 @@ function playersView(){
     <td>${s ? s.n : 0}</td><td>${s ? wdl(s) : '–'}</td><td>${s ? pct(s.rate) : '–'}</td>
     <td>${ed ? `<button class="ghost tiny" data-act="toggle" data-id="${esc(p.id)}">${p.active === false ? '휴면' : '활동'}</button>` : (p.active === false ? '휴면' : '활동')}</td>
     <td>${ed ? `<button class="x" data-act="delplayer" data-id="${esc(p.id)}" title="삭제">✕</button>` : ''}</td></tr>`; }).join('')}
-  </tbody></table></div><p class="help">이름을 눌러 바로 고칠 수 있어요. '휴면' 선수는 경기 입력 목록에서 빠지지만 기록은 그대로 남아요.</p>` : '<p class="muted small">등록된 선수가 없어요.</p>'}
+  </tbody></table></div><p class="help">${ed ? "이름을 눌러 바로 고칠 수 있어요. '휴면' 선수는 경기 입력 목록에서 빠지지만 기록은 그대로 남아요." : '선수 이름 수정·휴면·삭제는 관리자만 할 수 있어요.'}</p>` : '<p class="muted small">등록된 선수가 없어요.</p>'}
   </div>`;
 }
 
@@ -422,10 +427,22 @@ function playerView(pid){
   <div class="card"><h2>경기 기록<small>${ms.length}경기</small></h2>${matchList(ms)}</div>`;
 }
 
+function adminCard(){
+  if (isAdmin) return `<div class="card"><h2>관리자</h2><p class="help" style="margin-top:0">관리자로 로그인되어 있어요${adminEmail ? ' (' + esc(adminEmail) + ')' : ''}. 지난 기록 삭제·되살리기, 선수 수정, 설정 변경을 할 수 있어요.</p>
+    <div class="row end"><button class="ghost" data-act="logout">로그아웃</button></div></div>`;
+  if (signedIn) return `<div class="card"><h2>관리자</h2><p class="err">이 계정은 관리자로 등록되어 있지 않아요.</p><div class="row end"><button class="ghost" data-act="logout">로그아웃</button></div></div>`;
+  return `<div class="card"><h2>관리자 로그인</h2>
+    <p class="help" style="margin-top:0">회원은 로그인 없이 경기를 입력할 수 있어요. 기록 전체를 고치려면 관리자 로그인이 필요해요.</p>
+    <form id="loginform" autocomplete="on">
+      <label class="field"><span>이메일</span><input type="email" name="email" autocomplete="username" required></label>
+      <label class="field"><span>비밀번호</span><input type="password" name="password" autocomplete="current-password" required></label>
+      <div class="row end"><button class="primary" type="submit" ${conn === 'ok' ? '' : 'disabled'}>로그인</button></div>
+    </form></div>`;
+}
 function settingsView(){
-  const ed = canEdit();
-  return `<div class="card"><h2>클럽 설정</h2>
-    <p class="help" style="margin-top:0">여기서 바꾸면 모든 회원 화면에 똑같이 적용돼요.</p>
+  const ed = canAdmin();
+  return `${adminCard()}<div class="card"><h2>클럽 설정</h2>
+    <p class="help" style="margin-top:0">${ed ? '여기서 바꾸면 모든 회원 화면에 똑같이 적용돼요.' : '설정은 관리자만 바꿀 수 있어요.'}</p>
     <label class="field"><span>클럽 이름</span><input type="text" data-set="club" value="${esc(state.club)}" ${ed ? '' : 'disabled'}></label>
     <label class="field"><span>순위에 들어가는 최소 경기 수</span><input type="number" min="0" max="99" data-set="minGames" value="${state.minGames}" style="width:100px" ${ed ? '' : 'disabled'}></label>
     <label class="field"><span>무승부 게임 스코어 (이 점수에서 끝나면 무승부, 그 외에는 ${state.drawAt + 1}게임 선승)</span><div class="row"><input type="number" min="1" max="20" data-set="drawAt" value="${state.drawAt}" style="width:80px" ${ed ? '' : 'disabled'}><span class="muted">: ${state.drawAt}</span></div></label>
@@ -490,29 +507,27 @@ root.addEventListener('click', async e => {
     case 'ftype': form.type = el.dataset.v; if (form.type === 'S') { form.a2 = ''; form.b2 = ''; } render(); break;
     case 'quick': { const [x, y] = el.dataset.v.split(':'); form.sa = x; form.sb = y; render(); break; }
     case 'delmatch': {
-      if (!canEdit()) break; mark();
-      const m = state.matches.find(x => x.id === id); if (!m) break;
+      const m = state.matches.find(x => x.id === id); if (!m || !canTrash(m)) break; mark();
       if (!(await ask(`${m.date}  ${m.a.map(nameOf).join('·')} ${m.sa}:${m.sb} ${m.b.map(nameOf).join('·')}\n이 경기를 휴지통으로 옮길까요? 경기 기록 탭 아래 휴지통에서 되살릴 수 있어요.`, '휴지통으로', true))) break;
       m.deleted_at = new Date().toISOString(); render();
       if (await run('삭제', () => sb.from('matches').update({ deleted_at: m.deleted_at }).eq('id', id))) toast('휴지통으로 옮겼어요.');
       break;
     }
     case 'restorematch': {
-      if (!canEdit()) break; mark();
-      const m = state.matches.find(x => x.id === id); if (!m) break;
+      const m = state.matches.find(x => x.id === id); if (!m || !canTrash(m)) break; mark();
       m.deleted_at = null; render();
       if (await run('되살리기', () => sb.from('matches').update({ deleted_at: null }).eq('id', id))) toast('경기를 되살렸어요.');
       break;
     }
     case 'toggle': {
-      if (!canEdit()) break; mark();
+      if (!canAdmin()) break; mark();
       const p = PM.get(id); if (!p) break;
       p.active = p.active === false; render();
       await run('상태 변경', () => sb.from('players').update({ active: p.active }).eq('id', id));
       break;
     }
     case 'delplayer': {
-      if (!canEdit()) break; mark();
+      if (!canAdmin()) break; mark();
       const p = PM.get(id); if (!p) break;
       const n = state.matches.filter(m => m.a.includes(id) || m.b.includes(id)).length;
       if (n) { await ask(`${p.name} 님은 ${n}경기 기록이 있어서 삭제할 수 없어요. (휴지통 경기 포함)\n대신 '휴면'으로 바꾸면 입력 목록에서 빠져요.`, '알겠어요'); break; }
@@ -523,11 +538,11 @@ root.addEventListener('click', async e => {
     }
     case 'bulkpreview': bulk.preview = parseBulk(bulk.text); render(); break;
     case 'bulkadd': {
-      if (!canEdit()) break; mark();
+      if (!canAdd()) break; mark();
       const ok = (bulk.preview || []).filter(r => !r.err);
       const { add, revive, map } = resolveNames(ok.flatMap(r => [...r.a, ...r.b]));
       let t = Date.now();
-      const rows = ok.map(r => ({ id: uid(), t: t++, date: r.date, type: r.type, a: r.a.map(n => map[n]), b: r.b.map(n => map[n]), sa: r.sa, sb: r.sb, note: '', deleted_at: null }));
+      const rows = ok.map(r => ({ id: uid(), t: t++, date: r.date, type: r.type, a: r.a.map(n => map[n]), b: r.b.map(n => map[n]), sa: r.sa, sb: r.sb, note: '', deleted_at: null, created_at: new Date().toISOString() }));
       state.players.push(...add); revive.forEach(p => { p.deleted_at = null; p.active = true; }); reindex();
       state.matches.push(...rows); render();
       const good = await run('경기 추가', async () => { await savePlayers(add, revive); return sb.from('matches').insert(rows.map(matchRowDb)); });
@@ -536,15 +551,16 @@ root.addEventListener('click', async e => {
     }
     case 'copyjson': copy(JSON.stringify({ club: state.club, players: state.players, matches: live() }, null, 1), '백업 데이터를'); break;
     case 'copycsv': copy(csv(), 'CSV를'); break;
+    case 'logout': await sb.auth.signOut().catch(() => {}); await checkAdmin(); render(); toast('로그아웃했어요.'); break;
     case 'import': {
-      if (!canEdit()) break; mark();
+      if (!canAdmin()) break; mark();
       let d; try { d = JSON.parse($('#restore').value); } catch (err) { toast('백업 데이터 형식이 올바르지 않아요.'); break; }
       if (!d || !Array.isArray(d.matches) || !Array.isArray(d.players)) { toast('선수/경기 정보가 없는 데이터예요.'); break; }
       const oldName = {}; d.players.forEach(p => { oldName[p.id] = p.name; });
       const { add, revive, map } = resolveNames(d.players.map(p => p.name).filter(Boolean));
       const have = new Set(state.matches.map(m => m.id));
       const rows = d.matches.filter(m => m && m.id && !have.has(m.id) && Array.isArray(m.a) && Array.isArray(m.b) && m.a.concat(m.b).every(x => map[oldName[x]]))
-        .map(m => ({ id: m.id, t: Number(m.t) || Date.now(), date: m.date, type: m.type === 'S' ? 'S' : 'D', a: m.a.map(x => map[oldName[x]]), b: m.b.map(x => map[oldName[x]]), sa: +m.sa, sb: +m.sb, note: m.note || '', deleted_at: null }));
+        .map(m => ({ id: m.id, t: Number(m.t) || Date.now(), date: m.date, type: m.type === 'S' ? 'S' : 'D', a: m.a.map(x => map[oldName[x]]), b: m.b.map(x => map[oldName[x]]), sa: +m.sa, sb: +m.sb, note: m.note || '', deleted_at: null, created_at: new Date().toISOString() }));
       if (!(await ask(`새 선수 ${add.length}명, 새 경기 ${rows.length}건을 추가할까요?`, '가져오기'))) break;
       state.players.push(...add); reindex(); state.matches.push(...rows); render();
       if (await run('가져오기', async () => { await savePlayers(add, []); return rows.length ? sb.from('matches').insert(rows.map(matchRowDb)) : null; })) { $('#restore') && ($('#restore').value = ''); toast('가져왔어요.'); }
@@ -563,7 +579,7 @@ root.addEventListener('change', async e => {
   if (t.dataset.f) { filter[t.dataset.f] = t.value; render(); }
   else if (t.dataset.form) { form[t.dataset.form] = t.value; if (t.dataset.form === 'date') render(); }
   else if (t.dataset.set) {
-    if (!canEdit()) return; mark();
+    if (!canAdmin()) return; mark();
     const k = t.dataset.set;
     if (k === 'club') state.club = t.value.trim() || state.club;
     else if (k === 'drawAt') state.drawAt = Math.max(1, parseInt(t.value, 10) || 5);
@@ -573,7 +589,7 @@ root.addEventListener('change', async e => {
     if (await run('설정 저장', () => sb.from('settings').update(settingsRow()).eq('id', 1))) toast('설정을 저장했어요.');
   }
   else if (t.dataset.rename) {
-    if (!canEdit()) return; mark();
+    if (!canAdmin()) return; mark();
     const p = PM.get(t.dataset.rename); const v = t.value.trim();
     if (!p) return;
     if (!v || state.players.some(x => x !== p && x.name === v)) { toast(v ? '같은 이름의 선수가 이미 있어요.' : '이름을 비울 수 없어요.'); render(); return; }
@@ -583,7 +599,16 @@ root.addEventListener('change', async e => {
 });
 root.addEventListener('submit', async e => {
   e.preventDefault();
-  if (!canEdit()) return; mark();
+  if (e.target.id === 'loginform') {
+    const fd = new FormData(e.target);
+    const btn = e.target.querySelector('button'); btn.disabled = true;
+    const { error } = await sb.auth.signInWithPassword({ email: String(fd.get('email') || '').trim(), password: String(fd.get('password') || '') });
+    if (error) { btn.disabled = false; toast('로그인하지 못했어요. 이메일과 비밀번호를 확인해 주세요.'); return; }
+    await checkAdmin(); await load(true);
+    toast(isAdmin ? '관리자로 로그인했어요.' : '관리자로 등록된 계정이 아니에요.');
+    return;
+  }
+  if (!canAdd()) return; mark();
   if (e.target.id === 'playerform') {
     const ns = [...new Set(newPlayer.split(/[,\n]/).map(s => s.trim()).filter(Boolean))];
     const fresh = ns.filter(n => !visiblePlayers().some(p => p.name === n && p.active !== false));
@@ -607,7 +632,7 @@ root.addEventListener('submit', async e => {
     else err = scoreErr(sa, sbv);
     form.err = err;
     if (err) { render(); return; }
-    const m = { id: uid(), t: Date.now(), date: form.date, type: form.type, a, b, sa, sb: sbv, note: form.note.trim(), deleted_at: null };
+    const m = { id: uid(), t: Date.now(), date: form.date, type: form.type, a, b, sa, sb: sbv, note: form.note.trim(), deleted_at: null, created_at: new Date().toISOString() };
     state.matches.push(m);
     form = Object.assign(form, { a1: '', a2: '', b1: '', b2: '', sa: '', sb: '', note: '', err: '' });
     render();
@@ -618,13 +643,26 @@ window.addEventListener('hashchange', () => { const h = location.hash.slice(1); 
 
 // 다른 회원이 입력한 기록 반영: 앱으로 돌아올 때, 그리고 열려 있는 동안 1분마다
 function typing(){ const a = document.activeElement; return a && /INPUT|TEXTAREA|SELECT/.test(a.tagName); }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !busy) load(true); });
-setInterval(() => { if (document.visibilityState === 'visible' && !busy && !typing() && !$('.modal-bg')) load(true); }, 60000);
+const onLogin = () => view === 'settings' && !signedIn;   // 로그인 입력 중에는 화면을 새로 그리지 않음
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !busy && !onLogin()) load(true); });
+setInterval(() => { if (document.visibilityState === 'visible' && !busy && !typing() && !onLogin() && !$('.modal-bg')) load(true); }, 60000);
 
 /* ---------- start ---------- */
 if (loadCache()) conn = 'loading';
 render();
-try { sb = window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: false } }); } catch (e) { sb = null; }
-load();
+try { sb = window.supabase.createClient(SB_URL, SB_KEY); } catch (e) { sb = null; }
+async function checkAdmin(){
+  isAdmin = false; signedIn = false; adminEmail = '';
+  if (!sb) return;
+  try {
+    const { data } = await sb.auth.getSession();
+    const user = data && data.session && data.session.user;
+    if (!user) return;
+    signedIn = true; adminEmail = user.email || '';
+    const r = await sb.rpc('is_admin');
+    isAdmin = !r.error && r.data === true;
+  } catch (e) {}
+}
+checkAdmin().then(() => load());
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
