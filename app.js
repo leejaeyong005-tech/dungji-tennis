@@ -15,12 +15,12 @@ const pct = r => (r * 100).toFixed(1) + '%';
 const sgn = n => n > 0 ? '+' + n : String(n);
 
 /* ---------- state ---------- */
-let state = { club: '둥지 테니스 클럽', players: [], matches: [], minGames: 3, drawAt: 5, drawMode: 'half' };
+let state = { club: '둥지 테니스 클럽', players: [], matches: [], events: [], minGames: 3, drawAt: 5, drawMode: 'half' };
 let conn = 'loading';          // loading | ok | offline
 let lastSync = null;
 let sb = null;
 
-const VIEWS = ['ranking', 'add', 'matches', 'players', 'settings'];
+const VIEWS = ['ranking', 'events', 'add', 'matches', 'players', 'settings'];
 let view = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'ranking';
 let viewPid = null;
 let filter = { period: 'all', from: '', to: '', type: 'all' };
@@ -29,6 +29,8 @@ let form = { date: today(), type: 'D', a1: '', a2: '', b1: '', b2: '', sa: '', s
 let bulk = { text: '', preview: null };
 let newPlayer = '';
 let showTrash = false;
+let viewEid = null;
+let evForm = { date: '', name: '' };
 let busy = false;
 
 let isAdmin = false, adminEmail = '', signedIn = false;
@@ -41,13 +43,18 @@ const live = () => state.matches.filter(m => !m.deleted_at);
 const trash = () => state.matches.filter(m => m.deleted_at).sort((x, y) => (y.deleted_at > x.deleted_at ? 1 : -1));
 const visiblePlayers = () => state.players.filter(p => !p.deleted_at);
 let PM = new Map();
-const reindex = () => { PM = new Map(state.players.map(p => [p.id, p])); };
+const reindex = () => { PM = new Map(state.players.map(p => [p.id, p])); EV = new Map(liveEvents().map(e => [e.date, e])); };
+const liveEvents = () => (state.events || []).filter(e => !e.deleted_at).sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+let EV = new Map();                                   // 대회 날짜 → 대회
+const isEventMatch = m => EV.has(m.date);
+const regular = () => live().filter(m => !EV.has(m.date));   // 평소 통계용 (대회 날짜 제외)
 const nameOf = id => (PM.get(id) || {}).name || '(알 수 없음)';
 const plink = id => `<a class="p" data-act="player" data-id="${esc(id)}">${esc(nameOf(id))}</a>`;
 const names = ids => ids.map(plink).join(' · ');
 
 /* ---------- data ---------- */
-function fromDb(s, players, matches){
+function fromDb(s, players, matches, events){
+  state.events = (events || []).map(e => ({ id: e.id, date: e.date, name: e.name, deleted_at: e.deleted_at || null }));
   state.club = (s && s.club) || '둥지 테니스 클럽';
   state.minGames = s ? s.min_games : 3;
   state.drawAt = s ? s.draw_at : 5;
@@ -69,9 +76,9 @@ async function fetchAll(table){
 async function load(silent){
   if (!sb) { conn = 'offline'; render(); return; }
   try {
-    const [sres, players, matches] = await Promise.all([sb.from('settings').select('*').eq('id', 1), fetchAll('players'), fetchAll('matches')]);
+    const [sres, players, matches, events] = await Promise.all([sb.from('settings').select('*').eq('id', 1), fetchAll('players'), fetchAll('matches'), fetchAll('events')]);
     if (sres.error) throw sres.error;
-    fromDb(sres.data && sres.data[0], players, matches);
+    fromDb(sres.data && sres.data[0], players, matches, events);
     conn = 'ok'; lastSync = new Date();
     try { localStorage.setItem(CACHE_KEY, JSON.stringify(state)); } catch (e) {}
   } catch (e) {
@@ -111,9 +118,12 @@ function periodRange(){
   }
 }
 const byDate = (x, y) => x.date < y.date ? -1 : x.date > y.date ? 1 : (x.t || 0) - (y.t || 0);
-function filteredMatches(onlyType){
+function periodMatches(onlyType){       // 기간·종류 필터 (대회 경기 포함)
   const [from, to] = periodRange(), ty = onlyType || filter.type;
   return live().filter(m => (!from || m.date >= from) && (!to || m.date <= to) && (ty === 'all' || m.type === ty));
+}
+function filteredMatches(onlyType){     // 평소 통계용: 대회 날짜 경기 제외
+  return periodMatches(onlyType).filter(m => !EV.has(m.date));
 }
 function rateOf(r){
   if (state.drawMode === 'exclude') return (r.w + r.l) ? r.w / (r.w + r.l) : 0;
@@ -168,15 +178,15 @@ const streakCell = s => s ? `<span class="${s.endsWith('연승') ? 'pos' : 'neg'
 function render(){
   const root = $('#root');
   const ae = document.activeElement;
-  const keep = ae && ae.dataset && (ae.dataset.form || ae.hasAttribute('data-bulk') || ae.hasAttribute('data-np')) ? (ae.dataset.form || (ae.hasAttribute('data-bulk') ? 'bulk' : 'np')) : null;
+  const keep = ae && ae.dataset && (ae.dataset.form || ae.hasAttribute('data-bulk') || ae.hasAttribute('data-np') || ae.dataset.ev) ? (ae.dataset.ev ? 'ev:' + ae.dataset.ev : ae.dataset.form || (ae.hasAttribute('data-bulk') ? 'bulk' : 'np')) : null;
   const y = window.scrollY;
   root.innerHTML = header() + '<main><div class="wrap">' + body() + '</div></main>';
   window.scrollTo(0, y);
-  if (keep) { const el = keep === 'bulk' ? $('[data-bulk]') : keep === 'np' ? $('[data-np]') : $(`[data-form="${keep}"]`); if (el && el.tagName !== 'SELECT') el.focus(); }
+  if (keep) { const el = keep === 'bulk' ? $('[data-bulk]') : keep === 'np' ? $('[data-np]') : keep.startsWith('ev:') ? $(`[data-ev="${keep.slice(3)}"]`) : $(`[data-form="${keep}"]`); if (el && el.tagName !== 'SELECT') el.focus(); }
 }
 function header(){
-  const tabs = [['ranking', '순위'], ['add', '경기 입력'], ['matches', '경기 기록'], ['players', '선수'], ['settings', '설정']];
-  const cur = view === 'player' ? 'players' : view;
+  const tabs = [['ranking', '순위'], ['events', '대회'], ['add', '경기 입력'], ['matches', '경기 기록'], ['players', '선수'], ['settings', '설정']];
+  const cur = view === 'player' ? 'players' : view === 'event' ? 'events' : view;
   const st = conn === 'loading' ? '<span class="sync">불러오는 중…</span>'
     : conn === 'offline' ? '<button class="sync off" data-act="refresh">연결 안 됨 · 보기만 가능 ↻</button>'
     : `<button class="sync" data-act="refresh" title="새로고침">↻ ${lastSync ? pad(lastSync.getHours()) + ':' + pad(lastSync.getMinutes()) : ''}</button>`;
@@ -191,6 +201,8 @@ function body(){
     case 'players': return playersView();
     case 'settings': return settingsView();
     case 'player': return playerView(viewPid);
+    case 'events': return eventsView();
+    case 'event': return eventView(viewEid);
     default: return rankingView();
   }
 }
@@ -213,8 +225,10 @@ function emptyState(){
 
 function rankingView(){
   if (!live().length) return emptyState();
+  if (!regular().length) return filterBar(true) + '<div class="card empty"><b>평소 경기 기록이 없어요</b>지금까지 입력된 경기는 모두 대회 날 경기예요. 대회 탭에서 볼 수 있어요.</div>';
   const ms = filteredMatches('D');
   const singles = filteredMatches('S').length;
+  const evExcluded = periodMatches('all').filter(isEventMatch).length;
   const { P, pairs } = computeStats(ms);
   const rows = Object.values(P);
   const q = rows.filter(r => r.n >= state.minGames), low = rows.filter(r => r.n < state.minGames);
@@ -241,6 +255,7 @@ function rankingView(){
     ${low.length ? `<p class="muted small" style="margin:12px 0 4px">경기 수 부족 (${state.minGames}경기 미만)</p>
       <div class="tablewrap"><table><tbody>${low.sort(rankCmp).map(r => prow(Object.assign(r, { rank: 0 }))).join('')}</tbody></table></div>` : ''}
     ${singles ? `<p class="help" style="margin-top:10px">단식 ${singles}경기는 개인 순위에 들어가지 않아요. 경기 기록과 선수 상세에서 볼 수 있어요.</p>` : ''}
+    ${evExcluded ? `<p class="help" style="margin-top:6px">🏆 대회 날 경기 ${evExcluded}경기는 평소 통계에서 빠지고 대회 탭에서 따로 집계돼요.</p>` : ''}
   </div>
   <div class="card"><h2>복식 조합 순위<small>함께 2경기 이상</small></h2>
     ${pairRows.length ? `<div class="tablewrap"><table><thead><tr><th>#</th><th class="name">조합</th><th>경기</th><th>승-무-패</th><th>승률</th><th>게임 득실</th></tr></thead><tbody>
@@ -254,7 +269,7 @@ function matchRow(m, restore){
   const btn = !canTrash(m) ? '<span></span>' : restore
     ? `<button class="ghost tiny" data-act="restorematch" data-id="${esc(m.id)}">되살리기</button>`
     : `<button class="x" data-act="delmatch" data-id="${esc(m.id)}" title="휴지통으로">✕</button>`;
-  return `<div class="match"><span class="badge ${m.type}">${m.type === 'D' ? '복식' : '단식'}</span>
+  return `<div class="match"><span class="badge ${m.type}">${m.type === 'D' ? '복식' : '단식'}${EV.has(m.date) ? ' 🏆' : ''}</span>
     <span class="side ${aWin ? 'win' : ''}">${names(m.a)}</span>
     <span class="score">${m.sa} : ${m.sb}${isDraw(m) ? '<span class="drawtag">무승부</span>' : ''}</span>
     <span class="side b ${bWin ? 'win' : ''}">${names(m.b)}</span>
@@ -265,7 +280,7 @@ function matchList(ms, restore){
   const sorted = restore ? ms : ms.slice().sort(byDate).reverse();
   let out = '', last = '';
   for (const m of sorted) {
-    if (m.date !== last) { out += `<div class="day">${dayLabel(m.date)}</div>`; last = m.date; }
+    if (m.date !== last) { out += `<div class="day">${dayLabel(m.date)}${EV.has(m.date) ? ` · <span class="evtag">🏆 ${esc(EV.get(m.date).name)}</span>` : ''}</div>`; last = m.date; }
     out += matchRow(m, restore);
   }
   return out;
@@ -278,8 +293,8 @@ function dayLabel(s){
 function matchesView(){
   const tr = trash();
   if (!live().length && !tr.length) return emptyState();
-  const ms = filteredMatches();
-  return filterBar() + `<div class="card"><h2>경기 기록<small>${ms.length}경기</small></h2>${ms.length ? matchList(ms) : '<p class="muted small">이 조건에 맞는 경기가 없어요.</p>'}</div>
+  const ms = periodMatches();
+  return filterBar() + `<div class="card"><h2>경기 기록<small>${ms.length}경기${ms.some(isEventMatch) ? ' · 🏆 표시는 대회 경기' : ''}</small></h2>${ms.length ? matchList(ms) : '<p class="muted small">이 조건에 맞는 경기가 없어요.</p>'}</div>
   ${tr.length ? `<div class="card"><h2 style="margin:0"><button class="back" style="margin:0" data-act="trash">${showTrash ? '▾' : '▸'} 휴지통 ${tr.length}경기</button></h2>
     ${showTrash ? `<p class="help">실수로 지운 경기는 여기서 되살릴 수 있어요. 휴지통 경기는 통계에 들어가지 않아요.</p>${matchList(tr, true)}` : ''}</div>` : ''}`;
 }
@@ -295,7 +310,8 @@ function addView(){
   quick.push(N + ':' + N);
   for (let i = 0; i < N; i++) quick.push(i + ':' + G);
   const sameDay = live().filter(m => m.date === form.date);
-  return `<div class="card"><h2>경기 결과 입력</h2>
+  const ev = EV.get(form.date);
+  return `${ev ? `<div class="card evnote">🏆 <b>${esc(form.date)}</b>은 <b>${esc(ev.name)}</b> 대회 날이에요. 이 날 경기는 대회 기록으로만 집계되고 평소 통계에는 들어가지 않아요.</div>` : ''}<div class="card"><h2>경기 결과 입력</h2>
   <form id="addform" autocomplete="off">
     <div class="row" style="gap:14px;margin-bottom:12px">
       <label class="field" style="margin:0"><span>날짜</span><input type="date" data-form="date" value="${esc(form.date)}"></label>
@@ -329,7 +345,7 @@ function bulkCard(){
     ${ok.length ? `<button class="primary" data-act="bulkadd" ${busy ? 'disabled' : ''}>${ok.length}경기 추가</button>` : ''}</div>
     ${pv ? `<div style="margin-top:10px">${pv.map(r => r.err
       ? `<div class="err">✕ ${esc(r.line)} — ${esc(r.err)}</div>`
-      : `<div class="match"><span class="badge ${r.type}">${r.type === 'D' ? '복식' : '단식'}</span><span class="side ${r.sa > r.sb ? 'win' : ''}">${r.a.map(bn).join(' · ')}</span><span class="score">${r.sa} : ${r.sb}${r.sa === r.sb ? '<span class="drawtag">무승부</span>' : ''}</span><span class="side b ${r.sb > r.sa ? 'win' : ''}">${r.b.map(bn).join(' · ')}</span><span class="muted small">${esc(r.date)}</span></div>`).join('')}</div>` : ''}
+      : `<div class="match"><span class="badge ${r.type}">${r.type === 'D' ? '복식' : '단식'}</span><span class="side ${r.sa > r.sb ? 'win' : ''}">${r.a.map(bn).join(' · ')}</span><span class="score">${r.sa} : ${r.sb}${r.sa === r.sb ? '<span class="drawtag">무승부</span>' : ''}</span><span class="side b ${r.sb > r.sa ? 'win' : ''}">${r.b.map(bn).join(' · ')}</span><span class="muted small">${esc(r.date)}${EV.has(r.date) ? ' 🏆' : ''}</span></div>`).join('')}</div>` : ''}
   </div>`;
 }
 const bn = n => esc(n) + (visiblePlayers().some(p => p.name === n) ? '' : '<span class="new">새</span>');
@@ -379,12 +395,12 @@ async function savePlayers(add, revive){
 }
 
 function playersView(){
-  const { P } = computeStats(live().filter(m => m.type === 'D'));
+  const { P } = computeStats(regular().filter(m => m.type === 'D'));
   const list = visiblePlayers().sort((a, b) => ((a.active === false) - (b.active === false)) || a.name.localeCompare(b.name, 'ko'));
   const ed = canAdmin();
   return `${conn === 'ok' ? `<div class="card"><h2>선수 등록</h2>
     <form id="playerform" class="row" autocomplete="off"><input type="text" data-np value="${esc(newPlayer)}" placeholder="이름 (여러 명은 쉼표로 구분)" style="flex:1;min-width:180px"><button class="primary" type="submit" ${busy ? 'disabled' : ''}>추가</button></form></div>` : ''}
-  <div class="card"><h2>선수 목록<small>${list.length}명 · 전체 기간 복식 기준</small></h2>
+  <div class="card"><h2>선수 목록<small>${list.length}명 · 전체 기간 복식 기준 (대회 제외)</small></h2>
   ${list.length ? `<div class="tablewrap"><table class="plist"><thead><tr><th></th><th class="name">이름</th><th>경기</th><th>승-무-패</th><th>승률</th><th>상태</th><th></th></tr></thead><tbody>
   ${list.map(p => { const s = P[p.id]; return `<tr class="${p.active === false ? 'inactive' : ''}">
     <td><button class="x" data-act="player" data-id="${esc(p.id)}" title="상세 보기">▸</button></td>
@@ -403,7 +419,7 @@ function playerView(pid){
   const { P } = computeStats(ms);
   const s = P[pid];
   const back = `<button class="back" data-act="tab" data-v="players">‹ 선수 목록</button>`;
-  if (!s) return back + `<div class="card"><h2>${esc(p.name)}</h2></div>` + filterBar() + '<div class="card empty">이 조건에서 뛴 경기가 없어요.</div>';
+  if (!s) return back + `<div class="card"><h2>${esc(p.name)}</h2></div>` + filterBar() + '<div class="card empty">이 조건에서 뛴 평소 경기가 없어요.</div>' + playerEventsCard(pid);
   const relTable = (obj, label) => {
     const rows = Object.entries(obj).map(([id, r]) => Object.assign({ id, rate: rateOf(r) }, r)).sort((x, y) => (y.n - x.n) || (y.rate - x.rate));
     if (!rows.length) return `<p class="muted small">기록 없음</p>`;
@@ -419,12 +435,86 @@ function playerView(pid){
     <div class="tile"><div class="k">게임 득실</div><div class="v">${diffCell(s.diff)}<small> (${s.gf}:${s.ga})</small></div></div>
     <div class="tile"><div class="k">현재</div><div class="v" style="font-size:18px">${streakCell(s.streak) || '–'}</div></div>
   </div>
-  <div class="card"><h2>최근 10경기</h2>${chips(s.seq.slice(-10))}</div>
+  <div class="card"><h2>최근 10경기<small>대회 제외</small></h2>${chips(s.seq.slice(-10))}</div>
+  ${playerEventsCard(pid)}
   <div class="grid2">
     <div class="card"><h2>파트너별 전적<small>복식</small></h2>${relTable(s.partners, '파트너')}</div>
     <div class="card"><h2>상대별 전적</h2>${relTable(s.opps, '상대')}</div>
   </div>
   <div class="card"><h2>경기 기록<small>${ms.length}경기</small></h2>${matchList(ms)}</div>`;
+}
+
+/* ---------- 대회 ---------- */
+const MEDAL = ['🥇', '🥈', '🥉'];
+function eventResult(ev){
+  const ms = live().filter(m => m.date === ev.date);
+  const { P, pairs } = computeStats(ms);
+  const ind = Object.values(P); assignRanks(ind);
+  const prs = Object.values(pairs); assignRanks(prs);
+  return { ms, ind, prs };
+}
+function podium(rows, label){
+  const top = rows.filter(r => r.rank <= 3);
+  if (!top.length) return '';
+  return `<div class="podium">${top.map(r => `<div class="prize r${r.rank}"><span class="medal">${MEDAL[r.rank - 1]}</span>
+    <span class="pname">${r.ids ? names(r.ids) : plink(r.id)}</span>
+    <span class="pstat">${r.rank}위 · ${wdl(r)} · ${pct(r.rate)} · 득실 ${sgn(r.diff)}</span></div>`).join('')}</div>`;
+}
+function eventsView(){
+  const evs = liveEvents();
+  const admin = canAdmin();
+  return `${admin ? `<div class="card"><h2>대회 지정</h2>
+    <p class="help" style="margin-top:0">날짜를 대회로 지정하면 그날 경기는 대회 기록으로만 집계되고, 평소 순위와 통계에서는 빠져요.</p>
+    <form id="eventform" class="row" autocomplete="off">
+      <input type="date" data-ev="date" value="${esc(evForm.date || today())}" required>
+      <input type="text" data-ev="name" value="${esc(evForm.name)}" placeholder="대회 이름 (예: 송년 대회)" style="flex:1;min-width:160px" required>
+      <button class="primary" type="submit" ${busy ? 'disabled' : ''}>지정</button>
+    </form></div>` : ''}
+  <div class="card"><h2>대회 목록<small>${evs.length}개</small></h2>
+  ${evs.length ? evs.map(ev => {
+    const { ms, ind } = eventResult(ev);
+    const win = ind.filter(r => r.rank === 1);
+    return `<button class="evrow" data-act="event" data-id="${esc(ev.id)}">
+      <span class="evname">🏆 ${esc(ev.name)}</span>
+      <span class="muted small">${dayLabel(ev.date)} · ${ms.length}경기</span>
+      <span class="small">${win.length ? '우승 ' + win.map(r => esc(nameOf(r.id))).join(', ') : (ev.date > today() ? '예정' : '경기 기록 없음')}</span></button>`;
+  }).join('') : `<p class="muted small">아직 지정된 대회가 없어요.${admin ? '' : ' 대회 지정은 관리자가 해요.'}</p>`}
+  </div>`;
+}
+function eventView(eid){
+  const ev = liveEvents().find(e => e.id === eid);
+  if (!ev) { view = 'events'; return eventsView(); }
+  const { ms, ind, prs } = eventResult(ev);
+  const back = `<button class="back" data-act="tab" data-v="events">‹ 대회 목록</button>`;
+  const admin = canAdmin();
+  const head = `<div class="card evhead"><div class="muted small">${dayLabel(ev.date)}</div>
+    ${admin ? `<input class="evtitle" type="text" data-evname="${esc(ev.id)}" value="${esc(ev.name)}">` : `<h2 class="evtitle">🏆 ${esc(ev.name)}</h2>`}
+    <div class="muted small">${ms.length}경기 · 참가 ${ind.length}명</div></div>`;
+  if (!ms.length) return back + head + `<div class="card empty">아직 이 날 입력된 경기가 없어요. 경기 입력 탭에서 날짜를 ${esc(ev.date)}로 골라 입력하면 여기에 집계돼요.</div>` + eventAdmin(ev);
+  const row = r => `<tr class="${r.rank === 1 ? 'rank1' : ''}"><td>${r.rank}</td><td class="name">${r.ids ? names(r.ids) : plink(r.id)}</td><td>${r.n}</td><td>${wdl(r)}</td><td><b>${pct(r.rate)}</b></td><td>${diffCell(r.diff)}</td></tr>`;
+  const table = (rows, label) => `<div class="tablewrap"><table><thead><tr><th>순위</th><th class="name">${label}</th><th>경기</th><th>승-무-패</th><th>승률</th><th>게임 득실</th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table></div>`;
+  return back + head + `
+  <div class="card"><h2>개인 시상<small>그날 경기만 · 승률 → 승수 → 게임 득실 순</small></h2>${podium(ind)}</div>
+  ${prs.length ? `<div class="card"><h2>복식 조합 시상</h2>${podium(prs)}</div>` : ''}
+  <div class="card"><h2>개인 순위 전체</h2>${table(ind, '이름')}</div>
+  ${prs.length ? `<div class="card"><h2>조합 순위 전체</h2>${table(prs, '조합')}</div>` : ''}
+  <div class="card"><h2>대회 경기<small>${ms.length}경기</small></h2>${matchList(ms)}</div>
+  ${eventAdmin(ev)}`;
+}
+function eventAdmin(ev){
+  if (!canAdmin()) return '';
+  return `<div class="card"><h2>대회 관리</h2><p class="help" style="margin-top:0">대회 이름은 위 제목을 눌러 고칠 수 있어요. 대회 지정을 해제하면 이 날 경기는 다시 평소 통계에 들어가요.</p>
+    <div class="row end"><button class="danger" data-act="delevent" data-id="${esc(ev.id)}">대회 지정 해제</button></div></div>`;
+}
+function playerEventsCard(pid){
+  const rows = [];
+  for (const ev of liveEvents()) {
+    const { ind } = eventResult(ev);
+    const r = ind.find(x => x.id === pid);
+    if (r) rows.push(`<tr><td>${r.rank <= 3 ? MEDAL[r.rank - 1] : r.rank + '위'}</td><td class="name"><a class="p" data-act="event" data-id="${esc(ev.id)}">${esc(ev.name)}</a> <span class="muted small">${esc(ev.date)}</span></td><td>${wdl(r)}</td><td>${pct(r.rate)}</td></tr>`);
+  }
+  if (!rows.length) return '';
+  return `<div class="card"><h2>대회 성적</h2><div class="tablewrap"><table><tbody>${rows.join('')}</tbody></table></div></div>`;
 }
 
 function adminCard(){
@@ -486,8 +576,8 @@ async function copy(text, label){
 }
 function csv(){
   const q = v => /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
-  const rows = [['날짜', '종류', '팀A', '팀A 점수', '팀B 점수', '팀B', '승리', '메모']];
-  for (const m of live().sort(byDate)) rows.push([m.date, m.type === 'D' ? '복식' : '단식', m.a.map(nameOf).join(' / '), String(m.sa), String(m.sb), m.b.map(nameOf).join(' / '), m.sa > m.sb ? 'A' : m.sb > m.sa ? 'B' : '무승부', m.note || '']);
+  const rows = [['날짜', '종류', '팀A', '팀A 점수', '팀B 점수', '팀B', '승리', '대회', '메모']];
+  for (const m of live().sort(byDate)) rows.push([m.date, m.type === 'D' ? '복식' : '단식', m.a.map(nameOf).join(' / '), String(m.sa), String(m.sb), m.b.map(nameOf).join(' / '), m.sa > m.sb ? 'A' : m.sb > m.sa ? 'B' : '무승부', EV.has(m.date) ? EV.get(m.date).name : '', m.note || '']);
   return rows.map(r => r.map(q).join(',')).join('\n');
 }
 function go(v, pid){ view = v; viewPid = pid || null; if (VIEWS.includes(v) && location.hash.slice(1) !== v) { try { history.replaceState(null, '', '#' + v); } catch (e) {} } render(); window.scrollTo(0, 0); }
@@ -501,6 +591,15 @@ root.addEventListener('click', async e => {
   switch (act) {
     case 'tab': go(el.dataset.v); break;
     case 'player': go('player', id); break;
+    case 'event': viewEid = id; go('event'); break;
+    case 'delevent': {
+      if (!canAdmin()) break; mark();
+      const ev = liveEvents().find(e => e.id === id); if (!ev) break;
+      if (!(await ask(`'${ev.name}' (${ev.date}) 대회 지정을 해제할까요?\n이 날 경기는 다시 평소 순위와 통계에 들어가요. 경기 기록은 지워지지 않아요.`, '해제', true))) break;
+      ev.deleted_at = new Date().toISOString(); reindex(); go('events');
+      if (await run('대회 해제', () => sb.from('events').update({ deleted_at: ev.deleted_at }).eq('id', id))) toast('대회 지정을 해제했어요.');
+      break;
+    }
     case 'refresh': conn = 'loading'; render(); await load(); toast('최신 기록을 불러왔어요.'); break;
     case 'trash': showTrash = !showTrash; render(); break;
     case 'sort': { const k = el.dataset.k; if (sort.key === k) sort.dir *= -1; else sort = { key: k, dir: 1 }; render(); break; }
@@ -573,6 +672,7 @@ root.addEventListener('input', e => {
   if (t.dataset.form) form[t.dataset.form] = t.value;
   else if (t.hasAttribute('data-bulk')) bulk.text = t.value;
   else if (t.hasAttribute('data-np')) newPlayer = t.value;
+  else if (t.dataset.ev) evForm[t.dataset.ev] = t.value;
 });
 root.addEventListener('change', async e => {
   const t = e.target;
@@ -587,6 +687,13 @@ root.addEventListener('change', async e => {
     else state.minGames = Math.max(0, parseInt(t.value, 10) || 0);
     render();
     if (await run('설정 저장', () => sb.from('settings').update(settingsRow()).eq('id', 1))) toast('설정을 저장했어요.');
+  }
+  else if (t.dataset.evname) {
+    if (!canAdmin()) return; mark();
+    const ev = liveEvents().find(e => e.id === t.dataset.evname); const v = t.value.trim();
+    if (!ev || !v || v === ev.name) { render(); return; }
+    ev.name = v; reindex(); render();
+    if (await run('대회 이름 변경', () => sb.from('events').update({ name: v }).eq('id', ev.id))) toast('대회 이름을 바꿨어요.');
   }
   else if (t.dataset.rename) {
     if (!canAdmin()) return; mark();
@@ -606,6 +713,20 @@ root.addEventListener('submit', async e => {
     if (error) { btn.disabled = false; toast('로그인하지 못했어요. 이메일과 비밀번호를 확인해 주세요.'); return; }
     await checkAdmin(); await load(true);
     toast(isAdmin ? '관리자로 로그인했어요.' : '관리자로 등록된 계정이 아니에요.');
+    return;
+  }
+  if (e.target.id === 'eventform') {
+    if (!canAdmin()) return; mark();
+    const date = evForm.date || today(), name = evForm.name.trim();
+    if (!name) { toast('대회 이름을 넣어 주세요.'); return; }
+    if (EV.has(date)) { toast(date + '은 이미 대회로 지정되어 있어요.'); return; }
+    const old = (state.events || []).find(x => x.date === date);
+    let ev;
+    if (old) { old.name = name; old.deleted_at = null; ev = old; }
+    else { ev = { id: uid(), date, name, deleted_at: null }; state.events = (state.events || []).concat(ev); }
+    reindex(); evForm = { date: '', name: '' }; render();
+    const ok = await run('대회 지정', () => old ? sb.from('events').update({ name, deleted_at: null }).eq('id', old.id) : sb.from('events').insert({ id: ev.id, date, name }));
+    if (ok) toast(`${date} '${name}' 대회를 지정했어요.`);
     return;
   }
   if (!canAdd()) return; mark();
