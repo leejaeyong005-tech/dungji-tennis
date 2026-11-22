@@ -15,7 +15,7 @@ const pct = r => (r * 100).toFixed(1) + '%';
 const sgn = n => n > 0 ? '+' + n : String(n);
 
 /* ---------- state ---------- */
-let state = { club: '둥지 테니스 클럽', players: [], matches: [], events: [], minGames: 3, drawAt: 5, drawMode: 'half' };
+let state = { club: '둥지 테니스 클럽', players: [], matches: [], events: [], seasons: [], minGames: 3, drawAt: 5, drawMode: 'half', seasonUnit: 'half' };
 let conn = 'loading';          // loading | ok | offline
 let lastSync = null;
 let sb = null;
@@ -24,6 +24,8 @@ const VIEWS = ['ranking', 'events', 'add', 'matches', 'players', 'settings'];
 let view = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'ranking';
 let viewPid = null;
 let filter = { period: 'all', from: '', to: '', type: 'all' };
+let periodTouched = false;                 // 사용자가 기간을 직접 고르기 전에는 '현재 기수'를 기본으로
+let seasonForm = { name: '', start: '', end: '' };
 let sort = { key: 'rank', dir: 1 };
 let form = { date: today(), type: 'D', a1: '', a2: '', b1: '', b2: '', sa: '', sb: '', note: '', err: '' };
 let bulk = { text: '', preview: null };
@@ -53,12 +55,14 @@ const plink = id => `<a class="p" data-act="player" data-id="${esc(id)}">${esc(n
 const names = ids => ids.map(plink).join(' · ');
 
 /* ---------- data ---------- */
-function fromDb(s, players, matches, events){
+function fromDb(s, players, matches, events, seasons){
+  state.seasons = (seasons || []).map(x => ({ id: x.id, name: x.name, start: x.start_date, end: x.end_date, deleted_at: x.deleted_at || null }));
   state.events = (events || []).map(e => ({ id: e.id, date: e.date, name: e.name, deleted_at: e.deleted_at || null }));
   state.club = (s && s.club) || '둥지 테니스 클럽';
   state.minGames = s ? s.min_games : 3;
   state.drawAt = s ? s.draw_at : 5;
   state.drawMode = s && s.draw_mode === 'exclude' ? 'exclude' : 'half';
+  state.seasonUnit = s && ['quarter', 'half', 'year'].includes(s.season_unit) ? s.season_unit : 'half';
   state.players = players.map(p => ({ id: p.id, name: p.name, active: p.active !== false, deleted_at: p.deleted_at || null }));
   state.matches = matches.map(m => ({ id: m.id, t: Number(m.t) || 0, date: m.date, type: m.type, a: m.a || [], b: m.b || [], sa: m.sa, sb: m.sb, note: m.note || '', deleted_at: m.deleted_at || null, created_at: m.created_at || null }));
   reindex();
@@ -76,9 +80,10 @@ async function fetchAll(table){
 async function load(silent){
   if (!sb) { conn = 'offline'; render(); return; }
   try {
-    const [sres, players, matches, events] = await Promise.all([sb.from('settings').select('*').eq('id', 1), fetchAll('players'), fetchAll('matches'), fetchAll('events')]);
+    const [sres, players, matches, events, seasons] = await Promise.all([sb.from('settings').select('*').eq('id', 1), fetchAll('players'), fetchAll('matches'), fetchAll('events'), fetchAll('seasons')]);
     if (sres.error) throw sres.error;
-    fromDb(sres.data && sres.data[0], players, matches, events);
+    fromDb(sres.data && sres.data[0], players, matches, events, seasons);
+    applyDefaultPeriod();
     conn = 'ok'; lastSync = new Date();
     try { localStorage.setItem(CACHE_KEY, JSON.stringify(state)); } catch (e) {}
   } catch (e) {
@@ -107,8 +112,54 @@ async function run(label, fn){
 const matchRowDb = m => ({ id: m.id, t: m.t, date: m.date, type: m.type, a: m.a, b: m.b, sa: m.sa, sb: m.sb, note: m.note || '' });
 
 /* ---------- stats ---------- */
+/* ---------- 기수 ---------- */
+const liveSeasons = () => (state.seasons || []).filter(x => !x.deleted_at).sort((a, b) => a.start < b.start ? 1 : a.start > b.start ? -1 : 0);
+const seasonById = id => liveSeasons().find(x => x.id === id);
+const currentSeason = () => { const t = today(); return liveSeasons().find(x => x.start <= t && t <= x.end); };
+const UNIT_LABEL = { quarter: '분기', half: '반기', year: '연' };
+const parseD = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+function unitPeriod(dateStr, unit){          // 날짜가 속한 분기/반기/연의 [시작, 끝]
+  const d = parseD(dateStr), y = d.getFullYear(), m = d.getMonth();
+  const len = unit === 'quarter' ? 3 : unit === 'year' ? 12 : 6;
+  const sm = Math.floor(m / len) * len;
+  return [ymd(new Date(y, sm, 1)), ymd(new Date(y, sm + len, 0))];
+}
+function periodLabel(start, unit){
+  const d = parseD(start), y = d.getFullYear(), m = d.getMonth();
+  if (unit === 'year') return y + '년';
+  if (unit === 'quarter') return y + '년 ' + (Math.floor(m / 3) + 1) + '분기';
+  return y + '년 ' + (m < 6 ? '상반기' : '하반기');
+}
+function nextSeasonSuggestion(){
+  const all = liveSeasons(), last = all[0];
+  let start;
+  if (last) { const d = parseD(last.end); d.setDate(d.getDate() + 1); start = ymd(d); }
+  else start = unitPeriod(today(), state.seasonUnit)[0];
+  let end = unitPeriod(start, state.seasonUnit)[1];
+  if ((parseD(end) - parseD(start)) / 86400000 < 31) {   // 기간이 당겨져 자투리만 남으면 다음 단위 끝까지
+    const nd = parseD(end); nd.setDate(nd.getDate() + 1); end = unitPeriod(ymd(nd), state.seasonUnit)[1];
+  }
+  let name = '1기';
+  if (last) { const m = last.name.match(/^(.*?)(\d+)(\D*)$/); name = m ? m[1] + (Number(m[2]) + 1) + m[3] : last.name + ' 다음'; }
+  return { name, start, end };
+}
+function seasonErr(name, start, end, selfId){
+  if (!name) return '기수 이름을 넣어 주세요.';
+  if (!start || !end) return '시작일과 종료일을 모두 넣어 주세요.';
+  if (start > end) return '시작일이 종료일보다 늦어요.';
+  const o = liveSeasons().find(x => x.id !== selfId && x.start <= end && start <= x.end);
+  if (o) return `'${o.name}' (${o.start} ~ ${o.end}) 기간과 겹쳐요.`;
+  return '';
+}
+function applyDefaultPeriod(){
+  if (filter.period.startsWith('season:') && !seasonById(filter.period.slice(7))) filter.period = 'all';
+  if (!periodTouched) { const c = currentSeason(); if (c) filter.period = 'season:' + c.id; }
+}
+const seasonText = x => `${esc(x.name)} <span class="muted small">${x.start.replace(/-/g, '.')} ~ ${x.end.replace(/-/g, '.')}</span>`;
+
 function periodRange(){
   const d = new Date();
+  if (filter.period.startsWith('season:')) { const x = seasonById(filter.period.slice(7)); return x ? [x.start, x.end] : ['', '']; }
   switch (filter.period) {
     case 'month': return [ymd(new Date(d.getFullYear(), d.getMonth(), 1)), ''];
     case 'year': return [d.getFullYear() + '-01-01', ''];
@@ -178,11 +229,11 @@ const streakCell = s => s ? `<span class="${s.endsWith('연승') ? 'pos' : 'neg'
 function render(){
   const root = $('#root');
   const ae = document.activeElement;
-  const keep = ae && ae.dataset && (ae.dataset.form || ae.hasAttribute('data-bulk') || ae.hasAttribute('data-np') || ae.dataset.ev) ? (ae.dataset.ev ? 'ev:' + ae.dataset.ev : ae.dataset.form || (ae.hasAttribute('data-bulk') ? 'bulk' : 'np')) : null;
+  const keep = ae && ae.dataset && (ae.dataset.form || ae.hasAttribute('data-bulk') || ae.hasAttribute('data-np') || ae.dataset.ev || ae.dataset.sf) ? (ae.dataset.sf ? 'sf:' + ae.dataset.sf : ae.dataset.ev ? 'ev:' + ae.dataset.ev : ae.dataset.form || (ae.hasAttribute('data-bulk') ? 'bulk' : 'np')) : null;
   const y = window.scrollY;
   root.innerHTML = header() + '<main><div class="wrap">' + body() + '</div></main>';
   window.scrollTo(0, y);
-  if (keep) { const el = keep === 'bulk' ? $('[data-bulk]') : keep === 'np' ? $('[data-np]') : keep.startsWith('ev:') ? $(`[data-ev="${keep.slice(3)}"]`) : $(`[data-form="${keep}"]`); if (el && el.tagName !== 'SELECT') el.focus(); }
+  if (keep) { const el = keep === 'bulk' ? $('[data-bulk]') : keep === 'np' ? $('[data-np]') : keep.startsWith('ev:') ? $(`[data-ev="${keep.slice(3)}"]`) : keep.startsWith('sf:') ? $(`[data-sf="${keep.slice(3)}"]`) : $(`[data-form="${keep}"]`); if (el && el.tagName !== 'SELECT') el.focus(); }
 }
 function header(){
   const tabs = [['ranking', '순위'], ['events', '대회'], ['add', '경기 입력'], ['matches', '경기 기록'], ['players', '선수'], ['settings', '설정']];
@@ -209,7 +260,7 @@ function body(){
 function opt(list, cur){ return list.map(([v, l]) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join(''); }
 function filterBar(noType){
   return `<div class="filters">
-    <label>기간 <select data-f="period">${opt([['all', '전체'], ['month', '이번 달'], ['3m', '최근 3개월'], ['year', '올해'], ['custom', '직접 지정']], filter.period)}</select></label>
+    <label>기간 <select data-f="period">${opt([['all', '전체']].concat(liveSeasons().map(x => ['season:' + x.id, x.name + (currentSeason() === x ? ' (진행 중)' : '') + ' · ' + x.start.slice(2).replace(/-/g, '.') + '~' + x.end.slice(2).replace(/-/g, '.')]), [['month', '이번 달'], ['3m', '최근 3개월'], ['year', '올해'], ['custom', '직접 지정']]), filter.period)}</select></label>
     ${filter.period === 'custom' ? `<label>시작 <input type="date" data-f="from" value="${esc(filter.from)}"></label><label>끝 <input type="date" data-f="to" value="${esc(filter.to)}"></label>` : ''}
     ${noType ? '<span class="badge">복식 경기 기준</span>' : `<label>종류 <select data-f="type">${opt([['all', '전체'], ['D', '복식'], ['S', '단식']], filter.type)}</select></label>`}
   </div>`;
@@ -261,7 +312,27 @@ function rankingView(){
     ${pairRows.length ? `<div class="tablewrap"><table><thead><tr><th>#</th><th class="name">조합</th><th>경기</th><th>승-무-패</th><th>승률</th><th>게임 득실</th></tr></thead><tbody>
     ${pairRows.map((r, i) => `<tr><td>${i + 1}</td><td class="name">${names(r.ids)}</td><td>${r.n}</td><td>${wdl(r)}</td><td><b>${pct(r.rate)}</b></td><td>${diffCell(r.diff)}</td></tr>`).join('')}
     </tbody></table></div>` : '<p class="muted small">아직 2경기 이상 함께한 조합이 없어요.</p>'}
-  </div>`;
+  </div>
+  ${seasonsHistoryCard()}`;
+}
+function seasonResult(x){                  // 기수 순위: 복식, 대회 날 제외, 최소 경기 수 이상
+  const ms = regular().filter(m => m.type === 'D' && m.date >= x.start && m.date <= x.end);
+  const { P } = computeStats(ms);
+  const q = Object.values(P).filter(r => r.n >= state.minGames); assignRanks(q);
+  return { ms, P, q };
+}
+function seasonsHistoryCard(){
+  const list = liveSeasons();
+  if (!list.length) return '';
+  const cur = currentSeason();
+  return `<div class="card"><h2>기수별 순위<small>복식 ${state.minGames}경기 이상 · 대회 제외</small></h2>
+  ${list.map(x => {
+    const { ms, q } = seasonResult(x);
+    const top = q.filter(r => r.rank <= 3);
+    return `<div class="seasonrow"><div><b>${esc(x.name)}</b>${x === cur ? ' <span class="badge">진행 중</span>' : ''} <span class="muted small">${x.start.replace(/-/g, '.')} ~ ${x.end.replace(/-/g, '.')} · ${ms.length}경기</span></div>
+      <div class="small">${top.length ? top.map(r => `${MEDAL[r.rank - 1]} ${plink(r.id)} <span class="muted">${pct(r.rate)}</span>`).join('&nbsp;&nbsp; ') : '<span class="muted">순위 대상 없음</span>'}</div>
+      <button class="ghost tiny" data-act="seasonview" data-id="${esc(x.id)}">자세히</button></div>`;
+  }).join('')}</div>`;
 }
 
 function matchRow(m, restore){
@@ -419,7 +490,7 @@ function playerView(pid){
   const { P } = computeStats(ms);
   const s = P[pid];
   const back = `<button class="back" data-act="tab" data-v="players">‹ 선수 목록</button>`;
-  if (!s) return back + `<div class="card"><h2>${esc(p.name)}</h2></div>` + filterBar() + '<div class="card empty">이 조건에서 뛴 평소 경기가 없어요.</div>' + playerEventsCard(pid);
+  if (!s) return back + `<div class="card"><h2>${esc(p.name)}</h2></div>` + filterBar() + '<div class="card empty">이 조건에서 뛴 평소 경기가 없어요.</div>' + playerSeasonsCard(pid) + playerEventsCard(pid);
   const relTable = (obj, label) => {
     const rows = Object.entries(obj).map(([id, r]) => Object.assign({ id, rate: rateOf(r) }, r)).sort((x, y) => (y.n - x.n) || (y.rate - x.rate));
     if (!rows.length) return `<p class="muted small">기록 없음</p>`;
@@ -436,6 +507,7 @@ function playerView(pid){
     <div class="tile"><div class="k">현재</div><div class="v" style="font-size:18px">${streakCell(s.streak) || '–'}</div></div>
   </div>
   <div class="card"><h2>최근 10경기<small>대회 제외</small></h2>${chips(s.seq.slice(-10))}</div>
+  ${playerSeasonsCard(pid)}
   ${playerEventsCard(pid)}
   <div class="grid2">
     <div class="card"><h2>파트너별 전적<small>복식</small></h2>${relTable(s.partners, '파트너')}</div>
@@ -506,6 +578,17 @@ function eventAdmin(ev){
   return `<div class="card"><h2>대회 관리</h2><p class="help" style="margin-top:0">대회 이름은 위 제목을 눌러 고칠 수 있어요. 대회 지정을 해제하면 이 날 경기는 다시 평소 통계에 들어가요.</p>
     <div class="row end"><button class="danger" data-act="delevent" data-id="${esc(ev.id)}">대회 지정 해제</button></div></div>`;
 }
+function playerSeasonsCard(pid){
+  const rows = [];
+  for (const x of liveSeasons()) {
+    const { P, q } = seasonResult(x);
+    const r = P[pid]; if (!r) continue;
+    const qr = q.find(y => y.id === pid);
+    rows.push(`<tr><td>${qr ? (qr.rank <= 3 ? MEDAL[qr.rank - 1] : qr.rank + '위') : '<span class="muted small">-</span>'}</td><td class="name">${esc(x.name)}</td><td>${r.n}</td><td>${wdl(r)}</td><td>${pct(r.rate)}</td></tr>`);
+  }
+  if (!rows.length) return '';
+  return `<div class="card"><h2>기수별 성적<small>복식 · '-'는 ${state.minGames}경기 미만</small></h2><div class="tablewrap"><table><thead><tr><th>순위</th><th class="name">기수</th><th>경기</th><th>승-무-패</th><th>승률</th></tr></thead><tbody>${rows.join('')}</tbody></table></div></div>`;
+}
 function playerEventsCard(pid){
   const rows = [];
   for (const ev of liveEvents()) {
@@ -529,6 +612,31 @@ function adminCard(){
       <div class="row end"><button class="primary" type="submit" ${conn === 'ok' ? '' : 'disabled'}>로그인</button></div>
     </form></div>`;
 }
+function seasonsCard(ed){
+  const list = liveSeasons();
+  const sug = nextSeasonSuggestion();
+  const f = { name: seasonForm.name || sug.name, start: seasonForm.start || sug.start, end: seasonForm.end || sug.end };
+  const cur = currentSeason();
+  return `<div class="card"><h2>기수 관리</h2>
+    <p class="help" style="margin-top:0">기수 기간에 맞춰 순위를 따로 볼 수 있어요. 코트 사정 등으로 기간이 바뀌면 날짜를 고치면 바로 반영돼요.${ed ? '' : ' 기수 수정은 관리자만 할 수 있어요.'}</p>
+    ${ed ? `<label class="field"><span>기본 단위 (다음 기수 자동 제안용)</span><select data-set="seasonUnit" style="width:140px">${opt([['quarter', '분기'], ['half', '반기'], ['year', '연']], state.seasonUnit)}</select></label>` : ''}
+    ${list.length ? `<div class="seasonlist">${list.map(x => ed ? `<div class="seasonedit">
+        <input type="text" data-season="${esc(x.id)}" data-k="name" value="${esc(x.name)}" class="sname">
+        <input type="date" data-season="${esc(x.id)}" data-k="start" value="${esc(x.start)}">
+        <span class="muted">~</span>
+        <input type="date" data-season="${esc(x.id)}" data-k="end" value="${esc(x.end)}">
+        ${x === cur ? '<span class="badge">진행 중</span>' : ''}
+        <button class="x" data-act="delseason" data-id="${esc(x.id)}" title="삭제">✕</button></div>`
+      : `<div class="seasonedit">${seasonText(x)} ${x === cur ? '<span class="badge">진행 중</span>' : ''}</div>`).join('')}</div>` : '<p class="muted small">아직 등록된 기수가 없어요.</p>'}
+    ${ed ? `<form id="seasonform" class="seasonedit add" autocomplete="off">
+        <input type="text" data-sf="name" value="${esc(f.name)}" class="sname" placeholder="이름">
+        <input type="date" data-sf="start" value="${esc(f.start)}">
+        <span class="muted">~</span>
+        <input type="date" data-sf="end" value="${esc(f.end)}">
+        <button class="primary tiny" type="submit" ${busy ? 'disabled' : ''}>기수 추가</button></form>
+      <p class="help">다음 기수 제안(${UNIT_LABEL[state.seasonUnit]} 단위, ${periodLabel(f.start, state.seasonUnit)}부터)이 채워져 있어요. 이름과 날짜를 고쳐서 추가해도 돼요.</p>` : ''}
+  </div>`;
+}
 function settingsView(){
   const ed = canAdmin();
   return `${adminCard()}<div class="card"><h2>클럽 설정</h2>
@@ -538,6 +646,7 @@ function settingsView(){
     <label class="field"><span>무승부 게임 스코어 (이 점수에서 끝나면 무승부, 그 외에는 ${state.drawAt + 1}게임 선승)</span><div class="row"><input type="number" min="1" max="20" data-set="drawAt" value="${state.drawAt}" style="width:80px" ${ed ? '' : 'disabled'}><span class="muted">: ${state.drawAt}</span></div></label>
     <label class="field"><span>승률 계산 방식</span><select data-set="drawMode" ${ed ? '' : 'disabled'}>${opt([['half', '무승부 = 0.5승  (승 + 무×0.5) ÷ 경기'], ['exclude', '무승부 제외  승 ÷ (승 + 패)']], state.drawMode)}</select></label>
   </div>
+  ${seasonsCard(ed)}
   <div class="card"><h2>앱으로 설치하기</h2>
     <p class="help" style="margin:0">
       <b>아이폰:</b> 사파리에서 이 페이지 → 공유 버튼 → '홈 화면에 추가'<br>
@@ -581,7 +690,7 @@ function csv(){
   return rows.map(r => r.map(q).join(',')).join('\n');
 }
 function go(v, pid){ view = v; viewPid = pid || null; if (VIEWS.includes(v) && location.hash.slice(1) !== v) { try { history.replaceState(null, '', '#' + v); } catch (e) {} } render(); window.scrollTo(0, 0); }
-const settingsRow = () => ({ club: state.club, min_games: state.minGames, draw_at: state.drawAt, draw_mode: state.drawMode });
+const settingsRow = () => ({ club: state.club, min_games: state.minGames, draw_at: state.drawAt, draw_mode: state.drawMode, season_unit: state.seasonUnit });
 
 /* ---------- events ---------- */
 const root = $('#root');
@@ -592,6 +701,15 @@ root.addEventListener('click', async e => {
     case 'tab': go(el.dataset.v); break;
     case 'player': go('player', id); break;
     case 'event': viewEid = id; go('event'); break;
+    case 'seasonview': filter.period = 'season:' + id; periodTouched = true; go('ranking'); break;
+    case 'delseason': {
+      if (!canAdmin()) break; mark();
+      const x = seasonById(id); if (!x) break;
+      if (!(await ask(`'${x.name}' 기수를 삭제할까요?\n경기 기록은 그대로 남고, 기수 구분만 없어져요.`, '삭제', true))) break;
+      x.deleted_at = new Date().toISOString(); applyDefaultPeriod(); render();
+      if (await run('기수 삭제', () => sb.from('seasons').update({ deleted_at: x.deleted_at }).eq('id', id))) toast('기수를 삭제했어요.');
+      break;
+    }
     case 'delevent': {
       if (!canAdmin()) break; mark();
       const ev = liveEvents().find(e => e.id === id); if (!ev) break;
@@ -673,10 +791,11 @@ root.addEventListener('input', e => {
   else if (t.hasAttribute('data-bulk')) bulk.text = t.value;
   else if (t.hasAttribute('data-np')) newPlayer = t.value;
   else if (t.dataset.ev) evForm[t.dataset.ev] = t.value;
+  else if (t.dataset.sf) seasonForm[t.dataset.sf] = t.value;
 });
 root.addEventListener('change', async e => {
   const t = e.target;
-  if (t.dataset.f) { filter[t.dataset.f] = t.value; render(); }
+  if (t.dataset.f) { filter[t.dataset.f] = t.value; if (t.dataset.f === 'period') periodTouched = true; render(); }
   else if (t.dataset.form) { form[t.dataset.form] = t.value; if (t.dataset.form === 'date') render(); }
   else if (t.dataset.set) {
     if (!canAdmin()) return; mark();
@@ -684,9 +803,19 @@ root.addEventListener('change', async e => {
     if (k === 'club') state.club = t.value.trim() || state.club;
     else if (k === 'drawAt') state.drawAt = Math.max(1, parseInt(t.value, 10) || 5);
     else if (k === 'drawMode') state.drawMode = t.value === 'exclude' ? 'exclude' : 'half';
+    else if (k === 'seasonUnit') { state.seasonUnit = ['quarter', 'half', 'year'].includes(t.value) ? t.value : 'half'; seasonForm = { name: '', start: '', end: '' }; }
     else state.minGames = Math.max(0, parseInt(t.value, 10) || 0);
     render();
     if (await run('설정 저장', () => sb.from('settings').update(settingsRow()).eq('id', 1))) toast('설정을 저장했어요.');
+  }
+  else if (t.dataset.season) {
+    if (!canAdmin()) return; mark();
+    const x = seasonById(t.dataset.season); if (!x) return;
+    const nv = Object.assign({ name: x.name, start: x.start, end: x.end }, { [t.dataset.k]: t.dataset.k === 'name' ? t.value.trim() : t.value });
+    const err = seasonErr(nv.name, nv.start, nv.end, x.id);
+    if (err) { toast(err); render(); return; }
+    Object.assign(x, nv); applyDefaultPeriod(); render();
+    if (await run('기수 수정', () => sb.from('seasons').update({ name: nv.name, start_date: nv.start, end_date: nv.end }).eq('id', x.id))) toast(`'${nv.name}' 기수를 고쳤어요.`);
   }
   else if (t.dataset.evname) {
     if (!canAdmin()) return; mark();
@@ -713,6 +842,17 @@ root.addEventListener('submit', async e => {
     if (error) { btn.disabled = false; toast('로그인하지 못했어요. 이메일과 비밀번호를 확인해 주세요.'); return; }
     await checkAdmin(); await load(true);
     toast(isAdmin ? '관리자로 로그인했어요.' : '관리자로 등록된 계정이 아니에요.');
+    return;
+  }
+  if (e.target.id === 'seasonform') {
+    if (!canAdmin()) return; mark();
+    const sug = nextSeasonSuggestion();
+    const name = (seasonForm.name || sug.name).trim(), start = seasonForm.start || sug.start, end = seasonForm.end || sug.end;
+    const err = seasonErr(name, start, end, null);
+    if (err) { toast(err); return; }
+    const x = { id: uid(), name, start, end, deleted_at: null };
+    state.seasons = (state.seasons || []).concat(x); seasonForm = { name: '', start: '', end: '' }; applyDefaultPeriod(); render();
+    if (await run('기수 추가', () => sb.from('seasons').insert({ id: x.id, name, start_date: start, end_date: end }))) toast(`'${name}' 기수를 추가했어요.`);
     return;
   }
   if (e.target.id === 'eventform') {
