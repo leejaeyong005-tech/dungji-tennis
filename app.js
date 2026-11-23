@@ -346,7 +346,7 @@ function seasonsHistoryCard(){
 function matchRow(m, restore){
   const aWin = m.sa > m.sb, bWin = m.sb > m.sa;
   const btn = !canEdit(m) ? '<span></span>' : restore
-    ? `<button class="ghost tiny" data-act="restorematch" data-id="${esc(m.id)}">되살리기</button>`
+    ? `<span class="mbtns"><button class="ghost tiny" data-act="restorematch" data-id="${esc(m.id)}">되살리기</button><button class="ghost tiny purge" data-act="purgematch" data-id="${esc(m.id)}">완전 삭제</button></span>`
     : `<span class="mbtns"><button class="x" data-act="editmatch" data-id="${esc(m.id)}" title="수정">✎</button><button class="x" data-act="delmatch" data-id="${esc(m.id)}" title="휴지통으로">✕</button></span>`;
   return `<div class="match"><span class="badge ${m.type}">${m.type === 'D' ? '복식' : '단식'}${EV.has(m.date) ? ' 🏆' : ''}</span>
     <span class="side ${aWin ? 'win' : ''}">${names(m.a)}</span>
@@ -375,7 +375,9 @@ function matchesView(){
   const ms = periodMatches();
   return filterBar() + `<div class="card"><h2>경기 기록<small>${ms.length}경기${ms.some(isEventMatch) ? ' · 🏆 표시는 대회 경기' : ''}</small></h2>${ms.length ? matchList(ms) : '<p class="muted small">이 조건에 맞는 경기가 없어요.</p>'}</div>
   ${tr.length ? `<div class="card"><h2 style="margin:0"><button class="back" style="margin:0" data-act="trash">${showTrash ? '▾' : '▸'} 휴지통 ${tr.length}경기</button></h2>
-    ${showTrash ? `<p class="help">실수로 지운 경기는 여기서 되살릴 수 있어요. 휴지통 경기는 통계에 들어가지 않아요.</p>${matchList(tr, true)}` : ''}</div>` : ''}`;
+    ${showTrash ? `<p class="help">실수로 지운 경기는 여기서 되살릴 수 있어요. 휴지통 경기는 통계에 들어가지 않고, 휴지통에 들어간 지 30일이 지나면 자동으로 완전히 지워져요.</p>
+      ${tr.some(canEdit) ? `<div class="row end" style="margin-bottom:6px"><button class="ghost tiny purge" data-act="purgeall">휴지통 비우기 (${tr.filter(canEdit).length}경기)</button></div>` : ''}
+      ${matchList(tr, true)}` : ''}</div>` : ''}`;
 }
 
 function addView(){
@@ -783,6 +785,22 @@ root.addEventListener('click', async e => {
       break;
     }
     case 'canceledit': form = { date: form.date, type: 'D', a1: '', a2: '', b1: '', b2: '', sa: '', sb: '', note: '', err: '' }; render(); break;
+    case 'purgematch': {
+      const m = state.matches.find(x => x.id === id); if (!m || !m.deleted_at || !canEdit(m)) break; mark();
+      if (!(await ask(`${m.date}  ${m.a.map(nameOf).join('·')} ${m.sa}:${m.sb} ${m.b.map(nameOf).join('·')}\n이 경기를 완전히 지울까요? 지우면 되돌릴 수 없어요.`, '완전 삭제', true))) break;
+      state.matches = state.matches.filter(x => x.id !== id); render();
+      if (await run('완전 삭제', () => sb.from('matches').delete().eq('id', id))) toast('경기를 완전히 지웠어요.');
+      break;
+    }
+    case 'purgeall': {
+      const del = trash().filter(canEdit); if (!del.length) break; mark();
+      const others = trash().length - del.length;
+      if (!(await ask(`휴지통의 ${del.length}경기를 완전히 지울까요? 지우면 되돌릴 수 없어요.${others ? `\n(수정 기한이 지난 ${others}경기는 관리자만 지울 수 있어 남겨 둬요)` : ''}`, '휴지통 비우기', true))) break;
+      const ids = new Set(del.map(m => m.id));
+      state.matches = state.matches.filter(x => !ids.has(x.id)); render();
+      if (await run('휴지통 비우기', () => sb.from('matches').delete().in('id', [...ids]))) toast(del.length + '경기를 완전히 지웠어요.');
+      break;
+    }
     case 'restorematch': {
       const m = state.matches.find(x => x.id === id); if (!m || !canTrash(m)) break; mark();
       m.deleted_at = null; render();
