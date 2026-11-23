@@ -484,14 +484,13 @@ function playersView(){
   return `${conn === 'ok' ? `<div class="card"><h2>선수 등록</h2>
     <form id="playerform" class="row" autocomplete="off"><input type="text" data-np value="${esc(newPlayer)}" placeholder="이름 (여러 명은 쉼표로 구분)" style="flex:1;min-width:180px"><button class="primary" type="submit" ${busy ? 'disabled' : ''}>추가</button></form></div>` : ''}
   <div class="card"><h2>선수 목록<small>${list.length}명 · 전체 기간 복식 기준 (대회 제외)</small></h2>
-  ${list.length ? `<div class="tablewrap"><table class="plist"><thead><tr><th></th><th class="name">이름</th><th>경기</th><th>승-무-패</th><th>승률</th><th>상태</th><th></th></tr></thead><tbody>
+  ${list.length ? `<div class="tablewrap"><table class="plist"><thead><tr><th class="name">이름</th><th>경기</th><th>승-무-패</th><th>승률</th><th>상태</th><th></th></tr></thead><tbody>
   ${list.map(p => { const s = P[p.id]; return `<tr class="${p.active === false ? 'inactive' : ''}">
-    <td><button class="x" data-act="player" data-id="${esc(p.id)}" title="상세 보기">▸</button></td>
-    <td class="name">${edp(p) ? `<input type="text" data-rename="${esc(p.id)}" value="${esc(p.name)}">` : esc(p.name)}</td>
+    <td class="name">${plink(p.id)}</td>
     <td>${s ? s.n : 0}</td><td>${s ? wdl(s) : '–'}</td><td>${s ? pct(s.rate) : '–'}</td>
-    <td>${edp(p) ? `<button class="ghost tiny" data-act="toggle" data-id="${esc(p.id)}">${p.active === false ? '휴면' : '활동'}</button>` : (p.active === false ? '휴면' : '활동')}</td>
-    <td>${edp(p) ? `<button class="x" data-act="delplayer" data-id="${esc(p.id)}" title="삭제">✕</button>` : ''}</td></tr>`; }).join('')}
-  </tbody></table></div><p class="help">${ed ? "이름을 눌러 바로 고칠 수 있어요. '휴면' 선수는 경기 입력 목록에서 빠지지만 기록은 그대로 남아요." : '선수는 등록한 날과 그다음 날까지 누구나 고칠 수 있어요(이름 칸이 입력 칸으로 보이는 선수). 그 뒤로는 관리자만 고칠 수 있어요.'}</p>` : '<p class="muted small">등록된 선수가 없어요.</p>'}
+    <td><span class="muted small">${p.active === false ? '휴면' : '활동'}</span></td>
+    <td>${edp(p) ? `<button class="x" data-act="editplayer" data-id="${esc(p.id)}" title="선수 정보 수정">✎</button>` : ''}</td></tr>`; }).join('')}
+  </tbody></table></div><p class="help">이름을 누르면 개인 기록을 볼 수 있어요. ✎를 누르면 이름·활동/휴면을 고치거나 삭제할 수 있어요. ${ed ? '' : '선수 정보는 등록한 날과 그다음 날까지 누구나 고칠 수 있고, 그 뒤로는 관리자만 고칠 수 있어요(✎가 보이는 선수만 수정 가능).'} '휴면' 선수는 경기 입력 목록에서 빠지지만 기록은 그대로 남아요.</p>` : '<p class="muted small">등록된 선수가 없어요.</p>'}
   </div>`;
 }
 
@@ -502,14 +501,15 @@ function playerView(pid){
   const { P } = computeStats(ms);
   const s = P[pid];
   const back = `<button class="back" data-act="tab" data-v="players">‹ 선수 목록</button>`;
-  if (!s) return back + `<div class="card"><h2>${esc(p.name)}</h2></div>` + filterBar() + '<div class="card empty">이 조건에서 뛴 평소 경기가 없어요.</div>' + playerSeasonsCard(pid) + playerEventsCard(pid);
+  const editBtn = canEdit(p) ? `<button class="ghost tiny" data-act="editplayer" data-id="${esc(p.id)}">✎ 선수 정보 수정</button>` : '';
+  if (!s) return back + `<div class="card phead"><h2 style="margin:0">${esc(p.name)} ${p.active === false ? '<span class="badge S">휴면</span>' : ''}</h2>${editBtn}</div>` + filterBar() + '<div class="card empty">이 조건에서 뛴 평소 경기가 없어요.</div>' + playerSeasonsCard(pid) + playerEventsCard(pid);
   const relTable = (obj, label) => {
     const rows = Object.entries(obj).map(([id, r]) => Object.assign({ id, rate: rateOf(r) }, r)).sort((x, y) => (y.n - x.n) || (y.rate - x.rate));
     if (!rows.length) return `<p class="muted small">기록 없음</p>`;
     return `<div class="tablewrap"><table><thead><tr><th>#</th><th class="name">${label}</th><th>경기</th><th>승-무-패</th><th>승률</th></tr></thead><tbody>
       ${rows.map((r, i) => `<tr><td>${i + 1}</td><td class="name">${plink(r.id)}</td><td>${r.n}</td><td>${wdl(r)}</td><td><b class="${r.rate >= .5 ? 'pos' : 'neg'}">${pct(r.rate)}</b></td></tr>`).join('')}</tbody></table></div>`;
   };
-  return back + `<div class="card" style="padding:14px 16px"><h2 style="margin:0;font-size:20px">${esc(p.name)} ${p.active === false ? '<span class="badge S">휴면</span>' : ''}</h2></div>
+  return back + `<div class="card phead"><h2 style="margin:0;font-size:20px">${esc(p.name)} ${p.active === false ? '<span class="badge S">휴면</span>' : ''}</h2>${editBtn}</div>
   ${filterBar()}
   <div class="tiles">
     <div class="tile"><div class="k">경기</div><div class="v">${s.n}</div></div>
@@ -685,6 +685,39 @@ function ask(msg, ok, danger){
     document.body.appendChild(d);
   });
 }
+// 선수 정보 수정 창: 이름, 활동/휴면, 삭제. 저장을 눌러야 반영
+function playerDialog(p, nMatches){
+  return new Promise(res => {
+    const d = document.createElement('div'); d.className = 'modal-bg';
+    d.innerHTML = `<div class="modal"><h2 style="margin:0 0 12px;font-size:17px">선수 정보 수정</h2>
+      <label class="field"><span>이름</span><input type="text" class="pd-name" value="${esc(p.name)}" maxlength="30"></label>
+      <div class="field"><span>상태</span><div class="seg pd-seg"><button type="button" data-v="1" class="${p.active !== false ? 'on' : ''}">활동</button><button type="button" data-v="0" class="${p.active === false ? 'on' : ''}">휴면</button></div>
+        <span class="help" style="margin:4px 0 0">휴면 선수는 경기 입력 목록에서 빠지지만 기록은 남아요.</span></div>
+      <div class="err pd-err" style="min-height:1em"></div>
+      <div class="row" style="justify-content:space-between;margin-top:6px">
+        ${nMatches ? `<span class="muted small">경기 기록 ${nMatches}건이 있어 삭제할 수 없어요</span>` : '<button class="ghost pd-del" style="color:var(--loss)">선수 삭제</button>'}
+        <span class="row"><button class="ghost pd-cancel">취소</button><button class="primary pd-save">저장</button></span>
+      </div></div>`;
+    let active = p.active !== false;
+    const close = v => { d.remove(); res(v); };
+    d.addEventListener('click', e => {
+      if (e.target === d || e.target.closest('.pd-cancel')) return close(null);
+      const sb2 = e.target.closest('.pd-seg button');
+      if (sb2) { active = sb2.dataset.v === '1'; d.querySelectorAll('.pd-seg button').forEach(b => b.classList.toggle('on', b === sb2)); return; }
+      if (e.target.closest('.pd-del')) return close({ del: true });
+      if (e.target.closest('.pd-save')) {
+        const name = d.querySelector('.pd-name').value.trim();
+        const err = !name ? '이름을 비울 수 없어요.' : state.players.some(x => x !== p && x.name === name) ? '같은 이름의 선수가 이미 있어요.' : '';
+        if (err) { d.querySelector('.pd-err').textContent = err; return; }
+        if (name === p.name && active === (p.active !== false)) return close(null);
+        close({ name, active });
+      }
+    });
+    d.querySelector('.pd-name').addEventListener('keydown', e => { if (e.key === 'Enter') d.querySelector('.pd-save').click(); });
+    document.body.appendChild(d);
+    setTimeout(() => d.querySelector('.pd-name').focus(), 0);
+  });
+}
 function showText(title, text){
   const d = document.createElement('div'); d.className = 'modal-bg';
   d.innerHTML = `<div class="modal"><p>${esc(title)}</p><textarea readonly style="min-height:200px">${esc(text)}</textarea><div class="row end" style="margin-top:10px"><button class="primary" data-r="1">닫기</button></div></div>`;
@@ -756,12 +789,20 @@ root.addEventListener('click', async e => {
       if (await run('되살리기', () => sb.from('matches').update({ deleted_at: null }).eq('id', id))) toast('경기를 되살렸어요.');
       break;
     }
-    case 'toggle': {
-      const p = PM.get(id); if (!p || !canEdit(p)) break; mark();
-      p.active = p.active === false; render();
-      await run('상태 변경', () => sb.from('players').update({ active: p.active }).eq('id', id));
-      break;
+    case 'editplayer': {
+      const p = PM.get(id); if (!p || !canEdit(p)) break;
+      const nMatches = state.matches.filter(m => m.a.includes(id) || m.b.includes(id)).length;
+      const r = await playerDialog(p, nMatches);
+      if (!r) break;
+      if (r.del) { el.dataset.act = 'delplayer'; }
+      else {
+        if (!canEdit(p)) break; mark();
+        p.name = r.name; p.active = r.active; render();
+        if (await run('선수 정보 수정', () => sb.from('players').update({ name: r.name, active: r.active }).eq('id', id))) toast('선수 정보를 고쳤어요.');
+        break;
+      }
     }
+    // fallthrough: 수정 창에서 '선수 삭제'를 누른 경우
     case 'delplayer': {
       const p = PM.get(id); if (!p || !canEdit(p)) break; mark();
       const n = state.matches.filter(m => m.a.includes(id) || m.b.includes(id)).length;
@@ -841,13 +882,6 @@ root.addEventListener('change', async e => {
     if (!ev || !v || v === ev.name) { render(); return; }
     ev.name = v; reindex(); render();
     if (await run('대회 이름 변경', () => sb.from('events').update({ name: v }).eq('id', ev.id))) toast('대회 이름을 바꿨어요.');
-  }
-  else if (t.dataset.rename) {
-    const p = PM.get(t.dataset.rename); const v = t.value.trim();
-    if (!p || !canEdit(p)) return; mark();
-    if (!v || state.players.some(x => x !== p && x.name === v)) { toast(v ? '같은 이름의 선수가 이미 있어요.' : '이름을 비울 수 없어요.'); render(); return; }
-    p.name = v; render();
-    await run('이름 변경', () => sb.from('players').update({ name: v }).eq('id', p.id));
   }
 });
 root.addEventListener('submit', async e => {
