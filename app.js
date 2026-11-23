@@ -51,6 +51,10 @@ let EV = new Map();                                   // 대회 날짜 → 대�
 const isEventMatch = m => EV.has(m.date);
 const regular = () => live().filter(m => !EV.has(m.date));   // 평소 통계용 (대회 날짜 제외)
 const nameOf = id => (PM.get(id) || {}).name || '(알 수 없음)';
+// 게스트1·용병2·손님 같은 이름이 아닌 항목은 맨 뒤로. 숫자는 크기 순(게스트2 < 게스트10)
+const GUEST_RE = /^(게스트|guest|손님|용병|객원|비회원|임시)/i;
+const isGuestName = n => GUEST_RE.test(String(n).trim()) || /\d/.test(String(n));
+const nameCmp = (a, b) => (isGuestName(a) - isGuestName(b)) || String(a).localeCompare(String(b), 'ko', { numeric: true });
 const plink = id => `<a class="p" data-act="player" data-id="${esc(id)}">${esc(nameOf(id))}</a>`;
 const names = ids => ids.map(plink).join(' · ');
 
@@ -286,7 +290,7 @@ function rankingView(){
   assignRanks(q);
   if (sort.key !== 'rank') {
     const k = sort.key;
-    q.sort((x, y) => k === 'name' ? nameOf(x.id).localeCompare(nameOf(y.id), 'ko') * sort.dir : ((x[k] - y[k]) * -sort.dir) || (x.rank - y.rank));
+    q.sort((x, y) => k === 'name' ? nameCmp(nameOf(x.id), nameOf(y.id)) * sort.dir : ((x[k] - y[k]) * -sort.dir) || (x.rank - y.rank));
   }
   const draws = ms.filter(isDraw).length;
   const top = q.slice().sort(rankCmp)[0];
@@ -372,7 +376,7 @@ function matchesView(){
 
 function addView(){
   if (conn !== 'ok') return '<div class="card empty">서버에 연결되어 있을 때만 경기를 입력할 수 있어요. 인터넷 연결을 확인하고 위쪽 ↻ 를 눌러 주세요.</div>';
-  const active = visiblePlayers().filter(p => p.active !== false).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  const active = visiblePlayers().filter(p => p.active !== false).sort((a, b) => nameCmp(a.name, b.name));
   if (active.length < 2) return `<div class="card empty"><b>선수가 2명 이상 필요해요</b>먼저 선수 탭에서 회원을 등록하거나, 아래 '여러 경기 한 번에 입력'에 이름을 그대로 적으면 자동으로 등록돼요.</div>` + bulkCard();
   const sel = k => `<select data-form="${k}"><option value="">선수 선택</option>${active.map(p => `<option value="${esc(p.id)}" ${form[k] === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
   const D = form.type === 'D';
@@ -467,7 +471,7 @@ async function savePlayers(add, revive){
 
 function playersView(){
   const { P } = computeStats(regular().filter(m => m.type === 'D'));
-  const list = visiblePlayers().sort((a, b) => ((a.active === false) - (b.active === false)) || a.name.localeCompare(b.name, 'ko'));
+  const list = visiblePlayers().sort((a, b) => ((a.active === false) - (b.active === false)) || nameCmp(a.name, b.name));
   const ed = canAdmin();
   return `${conn === 'ok' ? `<div class="card"><h2>선수 등록</h2>
     <form id="playerform" class="row" autocomplete="off"><input type="text" data-np value="${esc(newPlayer)}" placeholder="이름 (여러 명은 쉼표로 구분)" style="flex:1;min-width:180px"><button class="primary" type="submit" ${busy ? 'disabled' : ''}>추가</button></form></div>` : ''}
