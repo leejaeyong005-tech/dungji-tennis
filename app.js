@@ -986,5 +986,5 @@ async function checkAdmin(){
   } catch (e) {}
 }
 checkAdmin().then(() => load());
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
 })();
