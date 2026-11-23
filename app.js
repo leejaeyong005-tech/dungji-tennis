@@ -204,8 +204,8 @@ function computeStats(ms){
       }
       if (m.type === 'D' && mine.length === 2) {
         const ids = mine.slice().sort(), key = ids.join('|');
-        const r = pairs[key] || (pairs[key] = { ids, n: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 });
-        tally(r, res); r.gf += gf; r.ga += ga;
+        const r = pairs[key] || (pairs[key] = { ids, n: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, seq: [] });
+        tally(r, res); r.gf += gf; r.ga += ga; r.seq.push(res);
       }
     }
   }
@@ -296,7 +296,9 @@ function rankingView(){
   const top = q.slice().sort(rankCmp)[0];
   const th = (k, l, cls) => `<th class="${cls || ''} ${sort.key === k ? 'sorted' : ''}" data-act="sort" data-k="${k}">${l}${sort.key === k ? (sort.dir > 0 ? ' ▾' : ' ▴') : ''}</th>`;
   const prow = r => `<tr class="${r.rank === 1 ? 'rank1' : ''}"><td>${r.rank || '–'}</td><td class="name">${plink(r.id)}</td><td>${r.n}</td><td>${r.w}</td><td>${r.d}</td><td>${r.l}</td><td><b>${pct(r.rate)}</b></td><td>${diffCell(r.diff)}</td><td>${chips(r.seq.slice(-5))}</td><td>${streakCell(r.streak)}</td></tr>`;
-  const pairRows = Object.values(pairs).filter(r => r.n >= 2).sort(rankCmp).slice(0, 10);
+  const TEAM_MIN = 2, TEAM_TOP = 15;      // 팀 순위: 함께 2경기 이상, 상위 15위까지
+  const teamAll = Object.values(pairs).filter(r => r.n >= TEAM_MIN); assignRanks(teamAll);
+  const pairRows = teamAll.filter(r => r.rank <= TEAM_TOP);
   return filterBar(true) + `
   <div class="tiles">
     <div class="tile"><div class="k">복식 경기</div><div class="v">${ms.length}<small> 경기</small></div></div>
@@ -312,10 +314,10 @@ function rankingView(){
     ${singles ? `<p class="help" style="margin-top:10px">단식 ${singles}경기는 개인 순위에 들어가지 않아요. 경기 기록과 선수 상세에서 볼 수 있어요.</p>` : ''}
     ${evExcluded ? `<p class="help" style="margin-top:6px">🏆 대회 날 경기 ${evExcluded}경기는 평소 통계에서 빠지고 대회 탭에서 따로 집계돼요.</p>` : ''}
   </div>
-  <div class="card"><h2>복식 조합 순위<small>함께 2경기 이상</small></h2>
-    ${pairRows.length ? `<div class="tablewrap"><table><thead><tr><th>#</th><th class="name">조합</th><th>경기</th><th>승-무-패</th><th>승률</th><th>게임 득실</th></tr></thead><tbody>
-    ${pairRows.map((r, i) => `<tr><td>${i + 1}</td><td class="name">${names(r.ids)}</td><td>${r.n}</td><td>${wdl(r)}</td><td><b>${pct(r.rate)}</b></td><td>${diffCell(r.diff)}</td></tr>`).join('')}
-    </tbody></table></div>` : '<p class="muted small">아직 2경기 이상 함께한 조합이 없어요.</p>'}
+  <div class="card"><h2>팀 순위<small>복식 파트너 · 함께 ${TEAM_MIN}경기 이상 · 상위 ${TEAM_TOP}위까지</small></h2>
+    ${pairRows.length ? `<div class="tablewrap"><table><thead><tr><th>순위</th><th class="name">팀</th><th>경기</th><th>승-무-패</th><th>승률</th><th>게임 득실</th><th>최근 5경기</th></tr></thead><tbody>
+    ${pairRows.map(r => `<tr class="${r.rank === 1 ? 'rank1' : ''}"><td>${r.rank}</td><td class="name">${names(r.ids)}</td><td>${r.n}</td><td>${wdl(r)}</td><td><b>${pct(r.rate)}</b></td><td>${diffCell(r.diff)}</td><td>${chips(r.seq.slice(-5))}</td></tr>`).join('')}
+    </tbody></table></div>${teamAll.length > pairRows.length ? `<p class="help" style="margin-top:8px">${TEAM_MIN}경기 이상 함께한 ${teamAll.length}팀 중 상위 ${TEAM_TOP}위까지 보여요.</p>` : ''}` : `<p class="muted small">아직 ${TEAM_MIN}경기 이상 함께한 팀이 없어요.</p>`}
   </div>
   ${seasonsHistoryCard()}`;
 }
