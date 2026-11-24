@@ -237,7 +237,7 @@ function render(){
   const ae = document.activeElement;
   const keep = ae && ae.dataset && (ae.dataset.form || ae.hasAttribute('data-bulk') || ae.hasAttribute('data-np') || ae.dataset.ev || ae.dataset.sf) ? (ae.dataset.sf ? 'sf:' + ae.dataset.sf : ae.dataset.ev ? 'ev:' + ae.dataset.ev : ae.dataset.form || (ae.hasAttribute('data-bulk') ? 'bulk' : 'np')) : null;
   const y = window.scrollY;
-  root.innerHTML = header() + '<main><div class="wrap">' + body() + '</div></main>';
+  root.innerHTML = header() + '<main><div class="wrap">' + iconNotice() + body() + '</div></main>';
   window.scrollTo(0, y);
   if (keep) { const el = keep === 'bulk' ? $('[data-bulk]') : keep === 'np' ? $('[data-np]') : keep.startsWith('ev:') ? $(`[data-ev="${keep.slice(3)}"]`) : keep.startsWith('sf:') ? $(`[data-sf="${keep.slice(3)}"]`) : $(`[data-form="${keep}"]`); if (el && el.tagName !== 'SELECT') el.focus(); }
 }
@@ -247,7 +247,7 @@ function header(){
   const st = conn === 'loading' ? '<span class="sync">불러오는 중…</span>'
     : conn === 'offline' ? '<button class="sync off" data-act="refresh">연결 안 됨 · 보기만 가능 ↻</button>'
     : `<button class="sync" data-act="refresh" title="새로고침">↻ ${lastSync ? pad(lastSync.getHours()) + ':' + pad(lastSync.getMinutes()) : ''}</button>`;
-  return `<header><div class="wrap"><div class="toprow"><div class="club">${esc(state.club)}${isAdmin ? ' <span class="badge">관리자</span>' : ''}</div>${st}</div><h1>경기 결과 · 통계</h1>
+  return `<header><div class="wrap"><div class="toprow"><div class="club haslogo"><img class="clublogo" src="emblem-96.png" alt="">${esc(state.club)}${isAdmin ? ' <span class="badge">관리자</span>' : ''}</div>${st}</div><h1>경기 결과 · 통계</h1>
     <nav>${tabs.map(([k, l]) => `<button data-act="tab" data-v="${k}" class="${cur === k ? 'on' : ''}">${l}</button>`).join('')}</nav></div></header>`;
 }
 function body(){
@@ -673,6 +673,24 @@ function settingsView(){
   </div>`;
 }
 
+/* ---------- 아이콘 변경 안내 (홈 화면에 설치해서 쓰는 사람에게 한 번) ---------- */
+const ICON_NOTICE_KEY = 'dungji-icon-notice-v2';
+const APP_URL = 'https://leejaeyong005-tech.github.io/dungji-tennis/';
+const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+function iconNotice(){
+  if (!isStandalone()) return '';
+  try { if (localStorage.getItem(ICON_NOTICE_KEY)) return ''; } catch (e) { return ''; }
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const steps = ios
+    ? `<li>홈 화면의 둥지 아이콘을 길게 눌러 <b>앱 제거 → 홈 화면에서 제거</b></li><li><b>사파리</b>에서 앱 주소를 열고 <b>공유 버튼 → 홈 화면에 추가</b></li>`
+    : `<li>홈 화면의 둥지 아이콘을 길게 눌러 <b>제거</b>(또는 앱 정보 → 제거)</li><li><b>크롬</b>에서 앱 주소를 열고 <b>메뉴(⋮) → 앱 설치</b></li>`;
+  return `<div class="card evnote notice"><b>🎾 앱 아이콘이 새 엠블럼으로 바뀌었어요</b><br>
+    홈 화면 아이콘이 아직 예전 그림이면 아래처럼 다시 설치해 주세요. 경기 기록은 서버에 있어서 지워지지 않아요.
+    <ol>${steps}</ol>
+    <span class="muted small">관리자는 다시 설치한 뒤 설정 탭에서 한 번 더 로그인해 주세요.</span>
+    <div class="row end" style="margin-top:8px"><button class="ghost tiny" data-act="copyurl">앱 주소 복사</button><button class="primary tiny" data-act="iconnotice">확인했어요</button></div></div>`;
+}
+
 /* ---------- helpers ---------- */
 let toastTimer;
 function toast(msg){
@@ -746,6 +764,8 @@ root.addEventListener('click', async e => {
   const act = el.dataset.act, id = el.dataset.id;
   switch (act) {
     case 'tab': go(el.dataset.v); break;
+    case 'iconnotice': try { localStorage.setItem(ICON_NOTICE_KEY, '1'); } catch (e) {} render(); break;
+    case 'copyurl': copy(APP_URL, '앱 주소를'); break;
     case 'player': go('player', id); break;
     case 'event': viewEid = id; go('event'); break;
     case 'seasonview': filter.period = 'season:' + id; periodTouched = true; go('ranking'); break;
